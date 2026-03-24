@@ -1,0 +1,44 @@
+scripts:
+  execute: scripts/run.py
+
+parameters:
+  action:
+    type: string
+    enum: [run, validate, list-agents, new-skill, convert-skill, serve-info]
+    description: >
+      What to do.
+      run: execute an agent from a config file.
+      validate: check a config file for errors.
+      list-agents: show all agents, their models and skills from a config.
+      new-skill: scaffold a SKILL.md + skill.yaml template in a target directory.
+      convert-skill: scan a skill directory and generate a skill.yaml sidecar.
+      serve-info: print startup info for agentji serve.
+    required: true
+  config:
+    type: string
+    description: >
+      Path to the agentji.yaml config file.
+      Required for run, validate, list-agents, and serve-info actions.
+    required: false
+  agent:
+    type: string
+    description: >
+      Name of the agent to run. Required for the run action.
+    required: false
+  prompt:
+    type: string
+    description: >
+      User prompt to send to the agent. Required for the run action.
+    required: false
+  skill_name:
+    type: string
+    description: >
+      Name for the new skill (kebab-case, e.g. "sql-query").
+      Required for new-skill. Used as a hint for convert-skill.
+    required: false
+  skill_dir:
+    type: string
+    description: >
+      Directory where the skill folder will be created (new-skill),
+      or path to an existing skill directory (convert-skill).
+    required: false

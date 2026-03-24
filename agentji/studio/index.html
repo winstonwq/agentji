@@ -1,0 +1,1164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>agentji studio</title>
+<style>
+/* ── Reset & Variables ───────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+:root {
+  --bg:       #0d1117;
+  --panel:    #161b22;
+  --card:     #1c2128;
+  --border:   #30363d;
+  --text:     #e6edf3;
+  --muted:    #7d8590;
+  --dim:      #484f58;
+  --purple:   #8957e5;
+  --teal:     #3fb950;
+  --coral:    #f0883e;
+  --blue:     #388bfd;
+  --amber:    #d29922;
+  --pink:     #db61a2;
+  --red:      #f85149;
+  --font:     -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono:     "SFMono-Regular", "SF Mono", Consolas, monospace;
+}
+body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; line-height: 1.5; }
+
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+#app { display: flex; height: 100vh; }
+#sidebar  { width: 240px; flex-shrink: 0; background: var(--panel); display: flex; flex-direction: column; }
+#chat     { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#logpanel { width: 280px; flex-shrink: 0; background: var(--panel); display: flex; flex-direction: column; }
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+#sidebar-hdr { padding: 11px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.logo { font-weight: 700; font-size: 13px; letter-spacing: -0.3px; }
+#conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); transition: background 0.3s; }
+#conn-dot.ok { background: var(--teal); }
+#sidebar-body { flex: 1; overflow-y: auto; }
+.sec-label { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; padding: 12px 14px 5px; }
+
+/* ── Agent tree ──────────────────────────────────────────────────────────── */
+.agent-node { padding: 6px 14px; }
+.agent-node.sub { padding-left: 30px; position: relative; }
+.agent-node.sub::before { content: ''; position: absolute; left: 18px; top: -6px; bottom: 50%; width: 1px; background: var(--border); }
+.agent-node.sub::after  { content: ''; position: absolute; left: 18px; top: 50%; width: 7px; height: 1px; background: var(--border); }
+.agent-row { display: flex; align-items: flex-start; gap: 7px; }
+.adot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; margin-top: 3px; }
+.adot.pulsing { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+.ainfo { flex: 1; min-width: 0; }
+.aname { font-weight: 600; font-size: 12px; }
+.amodel { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.astatus { font-size: 11px; color: var(--dim); margin-top: 1px; }
+.astatus .spin { display: inline-block; width: 9px; height: 9px; border: 1.5px solid var(--border); border-top-color: var(--purple); border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Skills ─────────────────────────────────────────────────────────────── */
+#skills-sec { border-top: 1px solid var(--border); }
+.skill-row { display: flex; align-items: center; justify-content: space-between; padding: 3px 14px; }
+.skill-name { font-size: 12px; color: var(--text); }
+.src-badge { font-size: 10px; padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border); color: var(--muted); }
+.src-badge.clawhub   { color: var(--teal);   border-color: rgba(63,185,80,.4); }
+.src-badge.anthropic { color: var(--purple); border-color: rgba(137,87,229,.4); }
+.src-badge.custom    { color: var(--coral);  border-color: rgba(240,136,62,.4); }
+
+/* ── Chat panel ──────────────────────────────────────────────────────────── */
+#chat-hdr { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel); display: flex; align-items: center; justify-content: space-between; }
+#new-session-btn { font-size: 11px; padding: 3px 8px; background: transparent; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); cursor: pointer; }
+#new-session-btn:hover { border-color: var(--purple); color: var(--text); }
+/* ── Iteration limit banner ─────────────────────────────────────────────── */
+#limit-banner { display: none; padding: 9px 14px; background: rgba(210,153,34,.1); border-top: 1px solid rgba(210,153,34,.35); gap: 10px; align-items: flex-start; }
+#limit-banner.visible { display: flex; }
+#limit-banner-text { flex: 1; font-size: 12px; line-height: 1.5; color: var(--text); }
+#limit-banner-text strong { color: var(--amber); }
+#limit-banner-preview { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.limit-btn { font-size: 11px; padding: 4px 10px; border-radius: 5px; border: 1px solid; cursor: pointer; flex-shrink: 0; background: transparent; }
+.limit-btn.continue { color: var(--amber); border-color: rgba(210,153,34,.5); }
+.limit-btn.continue:hover { background: rgba(210,153,34,.12); }
+.limit-btn.dismiss  { color: var(--muted); border-color: var(--border); }
+.limit-btn.dismiss:hover  { color: var(--text); }
+#chat-title { font-weight: 600; font-size: 13px; }
+#chat-runid { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+#messages { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; }
+#input-row { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-end; }
+#prompt { flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font: 13px/1.5 var(--font); padding: 7px 11px; resize: none; min-height: 34px; max-height: 120px; outline: none; }
+#prompt:focus { border-color: var(--purple); }
+#prompt:disabled { opacity: .45; cursor: not-allowed; }
+#prompt::placeholder { color: var(--dim); }
+#send { width: 32px; height: 32px; background: var(--purple); border: none; border-radius: 6px; color: #fff; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+#send:disabled { opacity: .35; cursor: not-allowed; }
+#stop-btn { display: none; height: 32px; padding: 0 10px; background: #c0392b; border: none; border-radius: 6px; color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; align-items: center; gap: 4px; white-space: nowrap; flex-shrink: 0; }
+#stop-btn.visible { display: flex; }
+
+/* ── Message types ───────────────────────────────────────────────────────── */
+.msg-user { align-self: flex-end; background: var(--card); border: 1px solid var(--border); border-radius: 12px 12px 3px 12px; padding: 9px 13px; max-width: 72%; white-space: pre-wrap; word-break: break-word; }
+.msg-think { align-self: flex-start; max-width: 86%; }
+.think-hdr { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; font-size: 12px; color: var(--muted); }
+.think-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.think-dot.live { animation: pulse 1.4s ease-in-out infinite; }
+.think-body { background: var(--card); border: 1px solid var(--border); border-radius: 7px; padding: 8px 11px; font-size: 12px; color: var(--muted); line-height: 1.55; }
+.think-body .phase { margin-top: 4px; padding: 3px 7px; background: rgba(255,255,255,.03); border-radius: 4px; }
+.think-body .flink { color: var(--teal); font-family: var(--mono); font-size: 11px; }
+/* Orchestrator step list */
+.orch-steps { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.orch-step  { display: flex; align-items: flex-start; gap: 7px; padding: 4px 7px; background: rgba(255,255,255,.03); border-radius: 4px; }
+.orch-step-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 3px; }
+.orch-step-dot.pending { background: var(--dim); }
+.orch-step-dot.running { background: var(--purple); animation: pulse 1.4s ease-in-out infinite; }
+.orch-step-dot.done    { background: var(--teal); }
+.orch-step-dot.limit   { background: var(--amber); }
+.orch-step-dot.error   { background: var(--red); }
+.orch-step-info { flex: 1; min-width: 0; }
+.orch-step-hdr  { font-size: 12px; font-weight: 600; }
+.orch-step-sub  { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
+.msg-resp { align-self: flex-start; max-width: 86%; background: var(--card); border: 1px solid var(--border); border-radius: 3px 12px 12px 12px; padding: 11px 14px; line-height: 1.7; word-break: break-word; }
+.msg-resp h1 { font-size: 15px; margin: 8px 0 4px; }
+.msg-resp h2 { font-size: 13px; margin: 7px 0 3px; }
+.msg-resp h3 { font-size: 12px; margin: 5px 0 2px; }
+.msg-resp p  { margin: 3px 0; }
+.msg-resp ul, .msg-resp ol { padding-left: 18px; margin: 3px 0; }
+.msg-resp li { margin: 1px 0; }
+.msg-resp strong { font-weight: 600; color: var(--text); }
+.msg-resp em { font-style: italic; }
+.msg-resp code { font-family: var(--mono); font-size: 11px; background: rgba(255,255,255,.07); padding: 1px 4px; border-radius: 3px; }
+.msg-resp pre { background: rgba(0,0,0,.3); border: 1px solid var(--border); border-radius: 5px; padding: 10px; overflow-x: auto; margin: 6px 0; }
+.msg-resp pre code { background: none; padding: 0; }
+.msg-resp a.file-dl { color: var(--teal); font-family: var(--mono); font-size: 11px; text-decoration: none; border-bottom: 1px dashed rgba(63,185,80,.4); }
+.msg-resp a.file-dl:hover { border-bottom-style: solid; }
+.msg-resp table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 12px; }
+.msg-resp th, .msg-resp td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+.msg-resp th { background: rgba(255,255,255,.05); font-weight: 600; }
+.cursor::after { content: '▋'; animation: blink 1s step-end infinite; font-size: 11px; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+.err-notice { background: rgba(248,81,73,.08); border: 1px solid rgba(248,81,73,.3); border-radius: 7px; padding: 10px 13px; font-size: 12px; color: var(--red); }
+.err-notice code { color: var(--text); }
+
+/* ── Log panel ───────────────────────────────────────────────────────────── */
+#log-hdr { padding: 9px 11px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+#log-hdr-label { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+#log-runid { font-family: var(--mono); font-size: 11px; color: var(--text); }
+#log-events { flex: 1; overflow-y: auto; padding: 4px 0; }
+.log-row { padding: 3px 10px; }
+.log-row:hover { background: rgba(255,255,255,.025); }
+.log-top { display: flex; align-items: center; gap: 5px; }
+.log-ts { font-family: var(--mono); font-size: 10px; color: var(--dim); flex-shrink: 0; }
+.badge { font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 3px; text-transform: uppercase; letter-spacing: .04em; flex-shrink: 0; }
+.bg  { background: rgba(125,133,144,.12); color: var(--muted); }
+.bp  { background: rgba(137,87,229,.18);  color: #b880f5; }
+.bge { background: rgba(63,185,80,.18);   color: var(--teal); }
+.br  { background: rgba(248,81,73,.18);   color: var(--red); }
+.ba  { background: rgba(210,153,34,.18);  color: var(--amber); }
+.bpk { background: rgba(219,97,162,.18);  color: var(--pink); }
+.log-agent { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-prev { font-family: var(--mono); font-size: 10px; color: var(--dim); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 1px; }
+.log-prev.err { color: var(--red); }
+/* Parallel group */
+.par-group { border-left: 2px solid var(--teal); margin: 3px 10px 3px 6px; padding-left: 7px; }
+.par-label { font-size: 10px; color: var(--muted); display: block; margin-bottom: 1px; }
+.par-row { display: flex; align-items: center; gap: 5px; padding: 1px 0; }
+.par-tool { font-size: 10px; font-weight: 600; color: var(--teal); flex-shrink: 0; }
+.par-prev { font-family: var(--mono); font-size: 10px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Footer stats */
+#log-footer { border-top: 1px solid var(--border); padding: 7px 11px; display: flex; flex-direction: column; gap: 2px; }
+.stat { display: flex; justify-content: space-between; font-size: 11px; }
+.stat-lbl { color: var(--muted); }
+.stat-val { font-family: var(--mono); color: var(--text); }
+/* ── Resize handles ─────────────────────────────────────────────────────── */
+.drag-v { width: 4px; flex-shrink: 0; cursor: col-resize; background: var(--border); transition: background .15s; }
+.drag-v:hover, .drag-v.dragging { background: var(--purple); }
+.drag-h { height: 4px; cursor: row-resize; background: var(--border); flex-shrink: 0; transition: background .15s; }
+.drag-h:hover, .drag-h.dragging { background: var(--purple); }
+
+/* ── Session toggles ─────────────────────────────────────────────────── */
+.toggle-row { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); cursor: pointer; user-select: none; white-space: nowrap; }
+.toggle-row:hover { color: var(--text); }
+.toggle-row input[type=checkbox] { accent-color: var(--purple); cursor: pointer; margin: 0; }
+#improve-row { display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Left sidebar ─────────────────────────────────────────────────── -->
+  <aside id="sidebar">
+    <div id="sidebar-hdr">
+      <span class="logo">⬡ agentji</span>
+      <div id="conn-dot" title="Connecting…"></div>
+    </div>
+    <div id="sidebar-body">
+      <div class="sec-label">Pipeline</div>
+      <div id="agent-tree"></div>
+      <div id="skills-sec">
+        <div class="sec-label">Skills used</div>
+        <div id="skills-list"></div>
+      </div>
+    </div>
+  </aside>
+  <div class="drag-v" id="drag-left"></div>
+
+  <!-- ── Center chat ───────────────────────────────────────────────────── -->
+  <main id="chat">
+    <div id="chat-hdr">
+      <span id="chat-title">agentji studio</span>
+      <div style="display:flex;align-items:center;gap:12px">
+        <label class="toggle-row" id="improve-row" title="At session end, extract corrections and hints to improve skill files">
+          <input type="checkbox" id="improve-chk" checked>
+          skill improvement
+        </label>
+        <label class="toggle-row" title="Maintain conversation history across turns">
+          <input type="checkbox" id="stateful-chk" checked>
+          stateful
+        </label>
+        <span id="session-badge" style="font-size:10px;color:var(--dim)"></span>
+        <button id="new-session-btn" title="Clear session history and start fresh">New session</button>
+        <span id="chat-runid"></span>
+      </div>
+    </div>
+    <div id="messages">
+      <div id="offline-msg" class="err-notice" style="display:none">
+        Could not connect to agentji serve.<br>
+        Run: <code>agentji serve --config your_config.yaml</code>
+      </div>
+    </div>
+    <div class="drag-h" id="drag-input"></div>
+    <div id="limit-banner">
+      <div id="limit-banner-text">
+        <div><strong id="limit-agent"></strong> reached its iteration limit (<span id="limit-iters"></span>). It may still have unfinished work.</div>
+        <div id="limit-banner-preview"></div>
+      </div>
+      <button class="limit-btn continue" id="limit-continue">Continue →</button>
+      <button class="limit-btn dismiss" id="limit-dismiss">Stop here</button>
+    </div>
+    <div id="input-row">
+      <textarea id="prompt" rows="1" placeholder="Send a message…"></textarea>
+      <button id="stop-btn">■ Stop</button>
+      <button id="send">↑</button>
+    </div>
+  </main>
+  <div class="drag-v" id="drag-right"></div>
+
+  <!-- ── Right log panel ──────────────────────────────────────────────── -->
+  <aside id="logpanel">
+    <div id="log-hdr">
+      <span id="log-hdr-label">Live Log</span>
+      <span id="log-runid"></span>
+    </div>
+    <div id="log-events"></div>
+    <div id="log-footer">
+      <div class="stat"><span class="stat-lbl">iterations</span><span class="stat-val" id="s-iter">–</span></div>
+      <div class="stat"><span class="stat-lbl">tool calls</span><span class="stat-val" id="s-tools">–</span></div>
+      <div class="stat"><span class="stat-lbl">elapsed</span><span class="stat-val" id="s-elapsed">–</span></div>
+    </div>
+  </aside>
+
+</div>
+
+<script>
+'use strict';
+
+// ── Server base URL ───────────────────────────────────────────────────────
+const API = location.protocol === 'file:' ? 'http://localhost:8000' : location.origin;
+
+// ── State ─────────────────────────────────────────────────────────────────
+let pipeline         = null;
+let running          = false;
+let improveEnabled   = false;   // tracks whether server has improvement enabled
+let sessionImprove   = false;   // current-session user toggle state
+let sessionStateful  = true;    // current-session stateful toggle state
+let activePipelineId = null;
+let activeEvtSrc = null;   // SSE EventSource for the current run
+let agentColors  = {};   // name → css color
+let agentNodes   = {};   // name → {dotEl, statusEl}
+let agentCards   = {};   // name → {el, bodyEl, hdrSpan, dotEl, toolCount, phases, ctxWrites, toolNames}
+let pendingTCs   = [];   // buffered tool_call events for parallel detection
+let responseCard = null; // current streaming response div
+let fullText     = '';   // accumulated text for current response bubble
+let stats = { iter: 0, tools: {}, startTs: null };
+let elapsedTimer = null;
+let userScrolledLog = false;
+let sessionHistory = []; // [{role, content}] — prior turns in this browser session
+
+// ── Session ID — stable for the lifetime of this browser tab ──────────────
+const SESSION_ID = ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+  (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
+
+const COLORS = ['#8957e5', '#3fb950', '#f0883e', '#388bfd', '#db61a2', '#58a6ff'];
+
+// ── DOM refs ──────────────────────────────────────────────────────────────
+const $  = id => document.getElementById(id);
+const agentTree  = $('agent-tree');
+const skillsList = $('skills-list');
+const msgs       = $('messages');
+const logEvents  = $('log-events');
+const promptEl   = $('prompt');
+const sendBtn    = $('send');
+const stopBtn    = $('stop-btn');
+const improveChk  = $('improve-chk');
+const statefulChk = $('stateful-chk');
+
+// ── Auto-resize textarea ──────────────────────────────────────────────────
+promptEl.addEventListener('input', () => {
+  promptEl.style.height = 'auto';
+  promptEl.style.height = Math.min(promptEl.scrollHeight, promptEl.style.maxHeight ? parseInt(promptEl.style.maxHeight) : 120) + 'px';
+});
+
+// ── Panel resize handles ──────────────────────────────────────────────────
+function makeDragV(handleId, targetId, sign) {
+  const handle = $(handleId);
+  const target = $(targetId);
+  handle.addEventListener('mousedown', e => {
+    const startX = e.clientX;
+    const startW = target.offsetWidth;
+    handle.classList.add('dragging');
+    const onMove = e => {
+      const w = Math.max(140, Math.min(520, startW + sign * (e.clientX - startX)));
+      target.style.width = w + 'px';
+    };
+    const onUp = () => {
+      handle.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    e.preventDefault();
+  });
+}
+makeDragV('drag-left',  'sidebar',  1);
+makeDragV('drag-right', 'logpanel', -1);
+
+$('drag-input').addEventListener('mousedown', e => {
+  const startY = e.clientY;
+  const startH = promptEl.offsetHeight;
+  $('drag-input').classList.add('dragging');
+  const onMove = e => {
+    const h = Math.max(34, Math.min(320, startH - (e.clientY - startY)));
+    promptEl.style.height = h + 'px';
+    promptEl.style.maxHeight = h + 'px';
+  };
+  const onUp = () => {
+    $('drag-input').classList.remove('dragging');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+  e.preventDefault();
+});
+
+// ── Log auto-scroll ───────────────────────────────────────────────────────
+logEvents.addEventListener('scroll', () => {
+  const { scrollTop, clientHeight, scrollHeight } = logEvents;
+  userScrolledLog = scrollTop + clientHeight < scrollHeight - 24;
+});
+function logBottom() { if (!userScrolledLog) logEvents.scrollTop = logEvents.scrollHeight; }
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function ts(isoStr) {
+  if (!isoStr) return '';
+  try { return new Date(isoStr).toLocaleTimeString('en-GB', {hour12:false}); }
+  catch { return ''; }
+}
+function trunc(s, n) { s = String(s ?? ''); return s.length > n ? s.slice(0, n) + '…' : s; }
+function argsPreview(args, limit) {
+  if (!args || typeof args !== 'object') return '';
+  const vals = Object.values(args);
+  if (!vals.length) return '';
+  return trunc(String(vals[0] ?? ''), limit);
+}
+
+// ── Markdown renderer ─────────────────────────────────────────────────────
+function md(text) {
+  // fenced code blocks first
+  const blocks = {};
+  let bi = 0;
+  text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const k = `\x00block${bi++}\x00`;
+    blocks[k] = `<pre><code>${esc(code.trimEnd())}</code></pre>`;
+    return k;
+  });
+
+  const lines = text.split('\n');
+  let html = '';
+  let inUL = false, inOL = false;
+
+  function closeList() {
+    if (inUL) { html += '</ul>'; inUL = false; }
+    if (inOL) { html += '</ol>'; inOL = false; }
+  }
+
+  function inline(s) {
+    // File path segment: any non-whitespace, non-HTML, non-backtick char — matches Unicode filenames
+    const ext     = '(?:docx|pdf|csv|xlsx|txt|md|json|png|jpg|jpeg|zip|gz)';
+    const seg     = '[^\\s<>"\'\\x60]+';
+    const pathPat = '(?:' + seg + '\\/)+'  + seg + '\\.' + ext;
+    const mkLink  = p => '<a class="file-dl" href="' + API + '/v1/files/' + p.replace(/^\.\//, '') + '" download>' + p + '</a>';
+    return esc(s)
+      // backtick-wrapped file paths → download link (before backtick→code conversion)
+      .replace(new RegExp('\\x60(' + pathPat + ')\\x60', 'g'), (_, p) => mkLink(p))
+      // bare file paths → download link; skip anything containing :// (URLs)
+      .replace(new RegExp('(' + pathPat + ')', 'g'), (match, p) => p.includes('://') ? match : mkLink(p))
+      .replace(/`(.+?)`/g, '<code>$1</code>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>');
+  }
+
+  for (const raw of lines) {
+    const line = raw;
+    // block placeholders
+    if (/^\x00block\d+\x00$/.test(line.trim())) {
+      closeList();
+      html += blocks[line.trim()];
+      continue;
+    }
+    if (line.startsWith('### ')) { closeList(); html += `<h3>${inline(line.slice(4))}</h3>`; continue; }
+    if (line.startsWith('## '))  { closeList(); html += `<h2>${inline(line.slice(3))}</h2>`; continue; }
+    if (line.startsWith('# '))   { closeList(); html += `<h1>${inline(line.slice(2))}</h1>`; continue; }
+    const ulM = line.match(/^[-*] (.*)/);
+    if (ulM) { if (!inUL) { closeList(); html += '<ul>'; inUL = true; } html += `<li>${inline(ulM[1])}</li>`; continue; }
+    const olM = line.match(/^(\d+)\. (.*)/);
+    if (olM) { if (!inOL) { closeList(); html += '<ol>'; inOL = true; } html += `<li>${inline(olM[2])}</li>`; continue; }
+    // table
+    if (line.startsWith('|')) {
+      if (line.replace(/[|\s-]/g,'') === '') continue; // separator row
+      closeList();
+      const cells = line.split('|').filter((_, i, a) => i > 0 && i < a.length - 1);
+      const isHdr = lines[lines.indexOf(line) + 1]?.startsWith('|--') || lines[lines.indexOf(line) + 1]?.startsWith('| --');
+      if (isHdr) {
+        html += `<table><thead><tr>${cells.map(c => `<th>${inline(c.trim())}</th>`).join('')}</tr></thead><tbody>`;
+      } else {
+        html += `<tr>${cells.map(c => `<td>${inline(c.trim())}</td>`).join('')}</tr>`;
+      }
+      continue;
+    }
+    if (line === '') { closeList(); html += '<br>'; continue; }
+    closeList();
+    html += `<p>${inline(line)}</p>`;
+  }
+  closeList();
+  // Close any open tables
+  html = html.replace(/<\/tbody>/g, '').replace(/<\/table>/g, '</tbody></table>');
+  if (html.includes('<thead>') && !html.includes('</table>')) html += '</tbody></table>';
+
+  return html;
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+async function init() {
+  try {
+    const res = await fetch(API + '/v1/pipeline');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    pipeline = await res.json();
+    $('conn-dot').className = 'ok';
+    $('conn-dot').title = 'Connected';
+
+    // Apply pipeline defaults to session toggles
+    improveEnabled  = !!pipeline.improvement_enabled;
+    sessionImprove  = improveEnabled;   // default to server config
+    sessionStateful = pipeline.stateful !== false;  // default true if not set
+
+    improveChk.checked  = sessionImprove;
+    statefulChk.checked = sessionStateful;
+
+    // Only show improvement checkbox when the server has it enabled
+    $('improve-row').style.display = improveEnabled ? 'flex' : 'none';
+
+    renderSidebar();
+  } catch {
+    $('conn-dot').title = 'Disconnected';
+    $('offline-msg').style.display = '';
+  }
+}
+
+// ── Toggle listeners ──────────────────────────────────────────────────────
+improveChk.addEventListener('change', () => { sessionImprove = improveChk.checked; });
+statefulChk.addEventListener('change', () => { sessionStateful = statefulChk.checked; });
+
+// ── Session end on tab/window close ──────────────────────────────────────
+window.addEventListener('beforeunload', () => {
+  if (sessionImprove) {
+    navigator.sendBeacon(API + '/v1/sessions/' + SESSION_ID + '/end');
+  }
+});
+
+// ── Sidebar ───────────────────────────────────────────────────────────────
+function inferSource(name, path) {
+  const base = String(path || '').split('/').pop();
+  if (/\d+\.\d+/.test(name) || /\d+\.\d+/.test(base)) return 'clawhub';
+  if (['brand-guidelines','docx','branching','image-generation','skill-creator'].includes(base)) return 'anthropic';
+  if (base === 'agentji' || name === 'agentji') return 'bundled';
+  return 'custom';
+}
+
+function renderSidebar() {
+  if (!pipeline) return;
+  agentTree.innerHTML = '';
+  skillsList.innerHTML = '';
+
+  const names = Object.keys(pipeline.agents);
+  names.forEach((n, i) => agentColors[n] = COLORS[i % COLORS.length]);
+
+  const allSubs = new Set(Object.values(pipeline.agents).flatMap(a => a.sub_agents || []));
+  const roots = names.filter(n => !allSubs.has(n));
+
+  function renderAgent(name, isRoot) {
+    const agent = pipeline.agents[name];
+    const color = agentColors[name];
+    const modelShort = agent.model.split('/').slice(1).join('/');
+    const node = document.createElement('div');
+    node.className = 'agent-node' + (isRoot ? '' : ' sub');
+    node.innerHTML = `
+      <div class="agent-row">
+        <div class="adot" id="adot-${name}" style="background:${color}"></div>
+        <div class="ainfo">
+          <div class="aname">${esc(name)}</div>
+          <div class="amodel">${esc(modelShort)}</div>
+          <div class="astatus" id="ast-${name}">waiting</div>
+        </div>
+      </div>`;
+    agentTree.appendChild(node);
+    agentNodes[name] = {
+      dotEl:    document.getElementById('adot-' + name),
+      statusEl: document.getElementById('ast-' + name),
+      start:    null,
+    };
+    (agent.sub_agents || []).forEach(sub => renderAgent(sub, false));
+  }
+  roots.forEach(r => renderAgent(r, true));
+
+  // Skills
+  const refs = pipeline.skill_refs || (pipeline.skills || []).map(n => ({name: n, path: ''}));
+  refs.forEach(({name, path}) => {
+    const src = inferSource(name, path);
+    const row = document.createElement('div');
+    row.className = 'skill-row';
+    row.innerHTML = `<span class="skill-name">${esc(name)}</span><span class="src-badge ${src}">${src}</span>`;
+    skillsList.appendChild(row);
+  });
+
+  $('chat-title').textContent = pipeline.default_agent || 'agentji studio';
+}
+
+// ── Agent status ──────────────────────────────────────────────────────────
+function agentRunning(name) {
+  const n = agentNodes[name]; if (!n) return;
+  n.dotEl.classList.add('pulsing');
+  n.start = Date.now();
+  n.statusEl.innerHTML = '<span class="spin"></span>';
+}
+
+function agentDone(name, iterations) {
+  const n = agentNodes[name]; if (!n) return;
+  n.dotEl.classList.remove('pulsing');
+  const secs = n.start ? ((Date.now() - n.start) / 1000).toFixed(0) + 's' : '';
+  n.statusEl.textContent = `${iterations} iter · ${secs}`;
+}
+
+// ── Thinking cards ────────────────────────────────────────────────────────
+function getOrMakeCard(name) {
+  if (agentCards[name]) return agentCards[name];
+  const color = agentColors[name] || '#7d8590';
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-think';
+  const hdr = document.createElement('div');
+  hdr.className = 'think-hdr';
+  const dot = document.createElement('div');
+  dot.className = 'think-dot live';
+  dot.style.background = color;
+  const hdrSpan = document.createElement('span');
+  hdrSpan.textContent = `${name} is starting…`;
+  hdr.append(dot, hdrSpan);
+  const body = document.createElement('div');
+  body.className = 'think-body';
+  body.textContent = 'Waiting…';
+  wrap.append(hdr, body);
+  // Insert before the response card so response stays at bottom
+  if (responseCard && responseCard.parentNode === msgs) {
+    msgs.insertBefore(wrap, responseCard);
+  } else {
+    msgs.appendChild(wrap);
+  }
+  msgs.scrollTop = msgs.scrollHeight;
+  agentCards[name] = { el: wrap, bodyEl: body, hdrSpan, dotEl: dot,
+                       toolCount: 0, phases: [], steps: [], ctxWrites: [], toolNames: new Set(), done: false };
+  return agentCards[name];
+}
+
+function cardSetHeader(name, text) {
+  const c = agentCards[name]; if (!c || c.done) return;
+  c.hdrSpan.textContent = text;
+}
+function cardSetBody(name, html) {
+  const c = agentCards[name]; if (!c || c.done) return;
+  c.bodyEl.innerHTML = html;
+}
+function cardFinalize(name, headerText) {
+  const c = agentCards[name]; if (!c || c.done) return;
+  c.done = true;
+  c.dotEl.classList.remove('live');
+  c.hdrSpan.textContent = headerText;
+}
+
+// ── Handle SSE events ─────────────────────────────────────────────────────
+function onEvent(event) {
+  const et = event.event;
+
+  // Capture pipeline id for cancel
+  if (event.pipeline && !activePipelineId) activePipelineId = event.pipeline;
+
+  // Stats
+  if (et === 'run_start' && !stats.startTs && !event.run_id?.includes(':')) {
+    stats.startTs = Date.now();
+    clearInterval(elapsedTimer);
+    elapsedTimer = setInterval(updateElapsed, 1000);
+  }
+  if (et === 'llm_call') {
+    stats.iter++; updateStats();
+    // Split response into a new bubble on each root-agent LLM call (after the first)
+    if (!event.run_id?.includes(':') && fullText) {
+      responseCard.classList.remove('cursor');
+      responseCard.innerHTML = md(fullText);
+      fullText = '';
+      responseCard = document.createElement('div');
+      responseCard.className = 'msg-resp cursor';
+      msgs.appendChild(responseCard);
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+  }
+  if (et === 'tool_call' && event.tool !== 'call_agent') {
+    const t = event.tool || '?';
+    stats.tools[t] = (stats.tools[t] || 0) + 1;
+    updateStats();
+  }
+
+  // Parallel detection: buffer consecutive tool_calls from same agent
+  if (et === 'tool_call') {
+    const last = pendingTCs[pendingTCs.length - 1];
+    if (last && last.agent === event.agent) {
+      pendingTCs.push(event);
+    } else {
+      flushTCs();
+      pendingTCs.push(event);
+    }
+    // Update thinking card live
+    updateCardFromToolCall(event);
+    return; // don't render log row yet
+  } else {
+    flushTCs(); // flush any buffered tool_calls before this event
+  }
+
+  // Agent lifecycle
+  if (et === 'run_start') {
+    agentRunning(event.agent);
+    if (!event.run_id?.includes(':')) {
+      $('log-runid').textContent  = event.pipeline || '';
+      $('chat-runid').textContent = 'run ' + (event.pipeline || '');
+    }
+    getOrMakeCard(event.agent);
+    // Update orchestrator step status → running
+    if (event.run_id?.includes(':')) {
+      for (const [oName, card] of Object.entries(agentCards)) {
+        const step = card.steps?.find(s => s.agent === event.agent && s.status === 'pending');
+        if (step) { step.status = 'running'; renderOrchestratorSteps(oName); break; }
+      }
+    }
+  }
+
+  if (et === 'llm_response' && event.content_preview) {
+    const preview = trunc(event.content_preview, 200);
+    cardSetHeader(event.agent, `${event.agent} is thinking…`);
+    cardSetBody(event.agent, esc(preview) + (event.content_preview.length > 200 ? '…' : ''));
+  }
+
+  if (et === 'context_write') {
+    const c = agentCards[event.agent];
+    if (c) c.ctxWrites.push(event);
+    const pathStr = event.path || event.key;
+    const pathHref = pathStr.replace(/^\.\//, '');
+    const sizeStr = event.size?.toLocaleString() ?? '?';
+    // Update card body even if done — context_write fires after run_end
+    if (c) {
+      c.bodyEl.insertAdjacentHTML('beforeend',
+        `<br>output: <a class="file-dl" href="${API}/v1/files/${pathHref}" download>${esc(pathStr)}</a>` +
+        ` <span style="color:var(--dim)">(${sizeStr} chars)</span>`);
+    }
+    // Inject a file-ready notice into the main chat for sub-agent outputs
+    if (event.run_id?.includes(':') && event.path && responseCard) {
+      const notice = document.createElement('div');
+      notice.className = 'msg-resp';
+      notice.style.cssText = 'font-size:11px;color:var(--muted);padding:4px 12px;border-top:none;';
+      notice.innerHTML = `${esc(event.agent)} output: <a class="file-dl" href="${API}/v1/files/${pathHref}" download>${esc(event.path)}</a>`;
+      msgs.insertBefore(notice, responseCard);
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+  }
+
+  if (et === 'run_limit') {
+    showLimitBanner(event.agent, event.iterations, event.max_iterations, event.last_preview);
+    // Mark the thinking card as limit-stopped
+    const c = agentCards[event.agent];
+    if (c && !c.done) {
+      c.done = true;
+      c.dotEl.classList.remove('live');
+      c.dotEl.style.background = 'var(--amber)';
+      c.hdrSpan.textContent = `${event.agent} paused — ${event.iterations}/${event.max_iterations} iterations`;
+    }
+    // Update orchestrator step for this sub-agent
+    if (event.run_id?.includes(':')) {
+      for (const [oName, card] of Object.entries(agentCards)) {
+        const step = card.steps?.find(s => s.agent === event.agent && s.status === 'running');
+        if (step) { step.status = 'limit'; step.iterations = event.iterations; renderOrchestratorSteps(oName); break; }
+      }
+    }
+  }
+
+  if (et === 'run_end') {
+    const iters = event.iterations || 0;
+    agentDone(event.agent, iters);
+    // Update orchestrator step for this sub-agent → done
+    if (event.run_id?.includes(':')) {
+      for (const [oName, card] of Object.entries(agentCards)) {
+        const step = card.steps?.find(s => s.agent === event.agent && s.status === 'running');
+        if (step) { step.status = 'done'; step.iterations = iters; renderOrchestratorSteps(oName); break; }
+      }
+    }
+    const c = agentCards[event.agent];
+    if (c) {
+      let summary = `${event.agent} completed in ${iters} iterations`;
+      if (c.toolNames.size) summary += ` · ${[...c.toolNames].slice(0,3).join(', ')}`;
+      cardFinalize(event.agent, summary);
+    }
+    if (!event.run_id?.includes(':')) {
+      clearInterval(elapsedTimer);
+    }
+  }
+
+  // Log row
+  renderLogRow(event);
+}
+
+function renderOrchestratorSteps(name) {
+  const c = agentCards[name];
+  if (!c || !c.steps.length) return;
+  const total = c.steps.length;
+  const done  = c.steps.filter(s => s.status === 'done').length;
+  cardSetHeader(name, `${name} · ${done}/${total} phases`);
+  const html = '<div class="orch-steps">' + c.steps.map(s => {
+    const col = agentColors[s.agent] || '#7d8590';
+    const dotClass = s.status;
+    const statusLabel = s.status === 'done'
+      ? `done · ${s.iterations ?? '?'} iter`
+      : s.status === 'limit'
+      ? `limit reached · ${s.iterations ?? '?'} iter`
+      : s.status === 'running'
+      ? 'running…'
+      : 'pending';
+    const sub = s.status === 'pending' && s.prompt
+      ? trunc(s.prompt, 80)
+      : statusLabel;
+    return `<div class="orch-step">
+      <div class="orch-step-dot ${dotClass}" style="${s.status === 'pending' ? `background:${col};opacity:.35` : `background:${s.status === 'done' ? 'var(--teal)' : s.status === 'limit' ? 'var(--amber)' : col}`}"></div>
+      <div class="orch-step-info">
+        <div class="orch-step-hdr" style="color:${col}">${esc(s.agent)}</div>
+        <div class="orch-step-sub">${esc(sub)}</div>
+      </div>
+    </div>`;
+  }).join('') + '</div>';
+  c.bodyEl.innerHTML = html;
+}
+
+function updateCardFromToolCall(event) {
+  const c = getOrMakeCard(event.agent);
+  if (c.done) return;
+  c.toolCount++;
+  c.toolNames.add(event.tool);
+
+  if (event.tool === 'call_agent') {
+    const target = event.args?.agent || '?';
+    c.phases.push(target);
+    c.steps.push({ agent: target, prompt: event.args?.prompt || '', status: 'pending', iterations: null });
+    renderOrchestratorSteps(event.agent);
+  } else {
+    const prev = argsPreview(event.args, 70);
+    // Only overwrite body if this agent has no orchestrator steps
+    if (!c.steps.length) {
+      cardSetHeader(event.agent, `${event.agent} is working…`);
+      cardSetBody(event.agent,
+        `<span style="color:var(--teal)">${esc(event.tool)}</span>${prev ? ': ' + esc(prev) : ''}`);
+    }
+  }
+}
+
+// ── Parallel tool-call flush ──────────────────────────────────────────────
+function flushTCs() {
+  if (!pendingTCs.length) return;
+  if (pendingTCs.length === 1) {
+    appendLogRow(pendingTCs[0]);
+  } else {
+    appendParGroup(pendingTCs);
+  }
+  pendingTCs = [];
+  logBottom();
+}
+
+function appendParGroup(events) {
+  const wrap = document.createElement('div');
+  wrap.className = 'par-group';
+  const lbl = document.createElement('span');
+  lbl.className = 'par-label';
+  lbl.textContent = `${events.length} parallel calls`;
+  wrap.appendChild(lbl);
+  events.forEach(e => {
+    const row = document.createElement('div');
+    row.className = 'par-row';
+    const toolEl = document.createElement('span');
+    toolEl.className = 'par-tool';
+    toolEl.textContent = e.tool;
+    const prevEl = document.createElement('span');
+    prevEl.className = 'par-prev';
+    prevEl.textContent = argsPreview(e.args, 60);
+    row.append(toolEl, prevEl);
+    wrap.appendChild(row);
+  });
+  logEvents.appendChild(wrap);
+}
+
+// ── Log row rendering ─────────────────────────────────────────────────────
+function appendLogRow(event) {
+  const row = document.createElement('div');
+  row.className = 'log-row';
+
+  const { badge, label, preview, isErr } = eventMeta(event);
+  const timeStr = ts(event.ts);
+
+  row.innerHTML =
+    `<div class="log-top">` +
+      `<span class="log-ts">${timeStr}</span>` +
+      `<span class="badge ${badge}">${esc(label)}</span>` +
+      `<span class="log-agent">${esc(event.agent || '')}</span>` +
+    `</div>` +
+    (preview ? `<div class="log-prev${isErr ? ' err' : ''}">${esc(trunc(preview, 90))}</div>` : '');
+
+  logEvents.appendChild(row);
+  logBottom();
+}
+
+function renderLogRow(event) {
+  appendLogRow(event);
+}
+
+function eventMeta(event) {
+  let badge = 'bg', label = event.event, preview = '', isErr = false;
+  switch (event.event) {
+    case 'run_start':
+      label = 'run_start';
+      preview = `${event.model} · ${trunc(event.prompt || '', 55)}`;
+      break;
+    case 'run_end':
+      label = 'run_end';
+      preview = `${event.iterations} iterations complete`;
+      break;
+    case 'llm_call':
+      badge = 'bp'; label = 'llm_call';
+      preview = `iter ${event.iteration} · ${event.n_messages} msg · ${event.n_tools} tools`;
+      break;
+    case 'llm_response':
+      badge = 'bp'; label = 'llm_resp';
+      preview = trunc(event.content_preview || '', 80);
+      break;
+    case 'tool_call':
+      badge = event.tool === 'call_agent' ? 'bpk' : 'bge';
+      label = event.tool === 'call_agent' ? 'call_agent' : 'tool_call';
+      preview = event.tool + (event.args ? ': ' + argsPreview(event.args, 60) : '');
+      break;
+    case 'tool_result':
+      if (event.tool === '[intervention]') {
+        badge = 'ba'; label = 'stuck';
+        preview = `intervention after ${event.result_preview?.match(/\d+/)?.[0] ?? '?'} consecutive errors`;
+        break;
+      }
+      isErr = !!event.error;
+      badge = isErr ? 'br' : 'bge'; label = 'result';
+      preview = isErr
+        ? trunc(event.result_preview || '', 80)
+        : trunc(event.result_preview || '', 55) + (event.result_chars ? ` (${event.result_chars}c)` : '');
+      break;
+    case 'run_limit':
+      badge = 'br'; label = 'limit';
+      isErr = true;
+      preview = `${event.agent} hit ${event.iterations}/${event.max_iterations} iter limit · ${trunc(event.last_preview || '', 55)}`;
+      break;
+    case 'context_write':
+      badge = 'ba'; label = 'ctx_write';
+      preview = `${event.key}${event.path ? ' → ' + event.path : ''} (${(event.size||0).toLocaleString()} chars)`;
+      break;
+    case 'context_read':
+      badge = 'ba'; label = 'ctx_read';
+      preview = `reading ${event.key}`;
+      break;
+  }
+  return { badge, label, preview, isErr };
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────────
+function updateStats() {
+  $('s-iter').textContent  = stats.iter;
+  const toolStr = Object.entries(stats.tools).map(([k,v]) => `${v} ${k}`).join(' · ') || '–';
+  $('s-tools').textContent = toolStr;
+}
+function updateElapsed() {
+  if (!stats.startTs) return;
+  const s = Math.floor((Date.now() - stats.startTs) / 1000);
+  $('s-elapsed').textContent = s >= 60 ? `${Math.floor(s/60)}m ${s%60}s` : `${s}s`;
+}
+
+// ── New session ────────────────────────────────────────────────────────────
+// ── Iteration limit banner ─────────────────────────────────────────────────
+let _limitAgent = '';
+function showLimitBanner(agent, iterations, maxIterations, lastPreview) {
+  _limitAgent = agent;
+  $('limit-agent').textContent = agent;
+  $('limit-iters').textContent = `${iterations}/${maxIterations}`;
+  $('limit-banner-preview').textContent = lastPreview ? `Last output: "${trunc(lastPreview, 120)}"` : '';
+  $('limit-banner').classList.add('visible');
+}
+function hideLimitBanner() {
+  $('limit-banner').classList.remove('visible');
+  _limitAgent = '';
+}
+$('limit-continue').addEventListener('click', () => {
+  if (running) return;
+  hideLimitBanner();
+  promptEl.value = `Continue from where you left off. Do not repeat work already completed.`;
+  sendMessage();
+});
+$('limit-dismiss').addEventListener('click', () => { stopRun(); hideLimitBanner(); setInput(true); running = false; });
+stopBtn.addEventListener('click', stopRun);
+
+function newSession() {
+  if (running) return;
+  // Trigger improvement extraction for the ending session (fire-and-forget)
+  if (sessionImprove && sessionHistory.length > 0) {
+    fetch(API + '/v1/sessions/' + SESSION_ID + '/end', { method: 'POST' }).catch(() => {});
+  }
+  sessionHistory = [];
+  msgs.innerHTML = '';
+  $('offline-msg').style.display = 'none';
+  updateSessionBadge();
+  $('chat-runid').textContent = '';
+  $('log-runid').textContent  = '';
+  $('log-events').innerHTML   = '';
+  stats = { iter: 0, tools: {}, startTs: null };
+  updateStats();
+  $('s-elapsed').textContent = '–';
+}
+
+function updateSessionBadge() {
+  const turns = Math.floor(sessionHistory.length / 2);
+  const sid = SESSION_ID.slice(0, 8);
+  $('session-badge').textContent = turns > 0
+    ? `session ${sid} · ${turns} turn${turns > 1 ? 's' : ''}`
+    : `session ${sid}`;
+}
+$('new-session-btn').addEventListener('click', newSession);
+
+// ── Send message ──────────────────────────────────────────────────────────
+async function sendMessage() {
+  const text = promptEl.value.trim();
+  if (!text || running) return;
+
+  hideLimitBanner();
+
+  // Reset run state
+  running = true;
+  activePipelineId = null;
+  agentCards  = {};
+  pendingTCs  = [];
+  fullText    = '';
+  userScrolledLog = false;
+  stats = { iter: 0, tools: {}, startTs: null };
+  clearInterval(elapsedTimer);
+  updateStats();
+  $('s-elapsed').textContent = '–';
+  $('log-events').innerHTML = '';
+
+  promptEl.value = '';
+  promptEl.style.height = '';
+  setInput(false);
+
+  // User bubble
+  const uBubble = document.createElement('div');
+  uBubble.className = 'msg-user';
+  uBubble.textContent = text;
+  msgs.appendChild(uBubble);
+
+  // Response card (always last in messages)
+  responseCard = document.createElement('div');
+  responseCard.className = 'msg-resp cursor';
+  msgs.appendChild(responseCard);
+  msgs.scrollTop = msgs.scrollHeight;
+
+  // Build messages array: history + current user message
+  const messages = [...sessionHistory, { role: 'user', content: text }];
+
+  let evtSrc = null;
+  activeEvtSrc = null;
+
+  try {
+    const body = { messages, stream: true };
+    // Only send overrides when they differ from server defaults
+    if (improveEnabled)          body.improve  = sessionImprove;
+    if (!sessionStateful)        body.stateful = false;
+
+    const res = await fetch(API + '/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Agentji-Session-Id': SESSION_ID,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      responseCard.classList.remove('cursor');
+      responseCard.innerHTML = `<span style="color:var(--red)">Error ${res.status}: ${esc(errText)}</span>`;
+      setInput(true); running = false;
+      return;
+    }
+
+    const runId = res.headers.get('X-Agentji-Run-Id') || '';
+    if (runId) {
+      $('chat-runid').textContent = 'run ' + runId;
+      $('log-runid').textContent  = runId;
+
+      // Open events SSE
+      evtSrc = new EventSource(API + '/v1/events/' + runId);
+      activeEvtSrc = evtSrc;
+      evtSrc.onmessage = e => {
+        if (e.data === '[DONE]') {
+          evtSrc.close();
+          activeEvtSrc = null;
+          flushTCs();
+          running = false;
+          activePipelineId = null;
+          setInput(true);
+          return;
+        }
+        try { onEvent(JSON.parse(e.data)); } catch {}
+      };
+      evtSrc.onerror = () => { evtSrc.close(); };
+    }
+
+    // Read streaming chat response
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop(); // keep incomplete line
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') continue;
+        try {
+          const parsed = JSON.parse(data);
+          const token  = parsed.choices?.[0]?.delta?.content || '';
+          const finish = parsed.choices?.[0]?.finish_reason === 'stop';
+          if (token) {
+            fullText += token;
+            responseCard.innerHTML = md(fullText);
+            responseCard.classList.add('cursor');
+            msgs.scrollTop = msgs.scrollHeight;
+          }
+          if (finish) responseCard.classList.remove('cursor');
+        } catch {}
+      }
+    }
+
+    responseCard.classList.remove('cursor');
+    if (fullText) responseCard.innerHTML = md(fullText);
+
+    // Save this exchange to session history
+    if (fullText) {
+      sessionHistory.push({ role: 'user', content: text });
+      sessionHistory.push({ role: 'assistant', content: fullText });
+      updateSessionBadge();
+    }
+
+    // If no events SSE (logging disabled), re-enable input after stream
+    if (!evtSrc) { running = false; setInput(true); }
+
+  } catch (err) {
+    responseCard.classList.remove('cursor');
+    responseCard.innerHTML = `<span style="color:var(--red)">${esc(String(err))}</span>`;
+    running = false;
+    setInput(true);
+    if (evtSrc) evtSrc.close();
+  }
+}
+
+function setInput(enabled) {
+  promptEl.disabled = !enabled;
+  sendBtn.disabled  = !enabled;
+  promptEl.placeholder = enabled ? 'Send a message…' : 'Waiting for agents…';
+  if (enabled) stopBtn.classList.remove('visible');
+  else stopBtn.classList.add('visible');
+}
+
+async function stopRun() {
+  if (!activePipelineId && !activeEvtSrc) return;
+  const id = activePipelineId;
+
+  // Immediately close SSE and re-enable input — don't wait for the server
+  if (activeEvtSrc) { activeEvtSrc.close(); activeEvtSrc = null; }
+  activePipelineId = null;
+  running = false;
+  hideLimitBanner();
+
+  // Remove blinking cursor from response card
+  if (responseCard) {
+    responseCard.classList.remove('cursor');
+    if (!fullText) responseCard.innerHTML = '<span style="color:var(--muted);font-size:11px">— stopped —</span>';
+  }
+
+  // Finalize any still-active agent thinking cards
+  Object.entries(agentCards).forEach(([name, c]) => {
+    if (!c.done) {
+      c.done = true;
+      c.dotEl.classList.remove('live');
+      c.dotEl.style.background = 'var(--red)';
+      c.hdrSpan.textContent = `${name} stopped`;
+    }
+  });
+
+  setInput(true);
+
+  // Signal the backend to cancel (fire-and-forget)
+  if (id) try { await fetch(API + '/v1/cancel/' + id, { method: 'POST' }); } catch {}
+}
+
+// ── Event listeners ───────────────────────────────────────────────────────
+sendBtn.addEventListener('click', sendMessage);
+promptEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+updateSessionBadge();
+init();
+</script>
+</body>
+</html>

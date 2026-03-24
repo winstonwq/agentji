@@ -1,0 +1,60 @@
+version: "1"
+
+# ── Provider ───────────────────────────────────────────────────────────────────
+#
+#  Local Ollama — free, runs offline, no API key.
+#  Install: https://ollama.com  then: ollama pull qwen3:4b
+#
+providers:
+  ollama:
+    api_key: ollama
+    base_url: http://localhost:11434/v1
+
+# ── MCP server ─────────────────────────────────────────────────────────────────
+#
+#  mcp-weather-server uses Open-Meteo (free, no API key, global coverage).
+#  Install: pip install mcp-weather-server
+#
+mcps:
+  - name: weather
+    command: python
+    args: [-m, mcp_weather_server]
+
+# ── Studio & session ───────────────────────────────────────────────────────────
+#
+#  studio.stateful: maintain conversation history across turns (default true)
+#  studio.max_turns: how many prior turns to include (default 20)
+#
+# studio:
+#   stateful: true
+#   max_turns: 20
+
+# ── Skill improvement (optional) ───────────────────────────────────────────────
+#
+#  When enabled, agentji extracts corrections and helpful hints from each
+#  session and appends them to improvements.jsonl alongside each skill's
+#  SKILL.md. Triggered on tab close or POST /v1/sessions/{id}/end.
+#
+# improvement:
+#   enabled: true
+#   model: null     # null = use the default agent's model (qwen3:4b here)
+#   skills: []      # empty = all loaded skills
+
+# ── Agent ──────────────────────────────────────────────────────────────────────
+agents:
+  weather-reporter:
+    model: ollama/qwen3:4b
+    system_prompt: |
+      You are a weather reporter. When the user asks for weather data:
+
+      1. Identify every city the user mentioned.
+      2. Call get_current_weather exactly once per city using the tool.
+         CRITICAL: get_current_weather takes ONE city string — never pass a list.
+         Make one tool call per city. Do not batch them.
+      3. Wait for ALL tool results before writing anything.
+         Never invent or estimate data — only use what the tools return.
+      4. Present results in a single Markdown table:
+         City | Condition | Temp (°C) | Humidity (%) | Wind (km/h)
+      5. Add one sentence noting the most notable weather difference across cities.
+    mcps: [weather]
+    max_iterations: 20

@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentji"
+version = "0.10.0"
+description = "Universal configuration and execution layer for AI agents"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Winston Wang Qi" }]
+requires-python = ">=3.10"
+keywords = ["agent", "llm", "mcp", "qwen", "litellm", "langgraph", "openai", "chinese-llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "litellm",
+    "langgraph",
+    "fastmcp",
+    "pydantic>=2.0",
+    "pyyaml",
+    "typer",
+    "rich",
+]
+
+[project.optional-dependencies]
+serve = [
+    "fastapi",
+    "uvicorn[standard]",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "python-dotenv",
+    "yfinance",            # used by tests/fixtures/yahoo_finance_mcp.py
+    "mcp-weather-server",  # used by examples/weather-reporter
+]
+
+[project.scripts]
+agentji = "agentji.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agentji*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+markers = [
+    "integration: real API calls (requires API keys in .env)",
+    "local: requires a running Ollama instance with a model pulled",
+]

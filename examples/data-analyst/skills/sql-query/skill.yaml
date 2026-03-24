@@ -1,0 +1,14 @@
+scripts:
+  execute: scripts/run_query.py
+timeout: 30
+
+parameters:
+  query:
+    type: string
+    description: The SQL query to execute. Must be read-only (SELECT / WITH / EXPLAIN / PRAGMA).
+    required: true
+  database:
+    type: string
+    description: Path to the SQLite database file.
+    required: false
+    default: "./data/chinook.db"
