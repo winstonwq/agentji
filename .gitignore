@@ -16,19 +16,20 @@ env/
 .env
 *.env.local
 
-# agentji runtime
-runs/       # per-pipeline scratch directories
-logs/*.jsonl
-output/     # legacy output dirs (superseded by runs/)
+# agentji runtime (scratch dirs, logs, legacy output)
+runs/
+logs/
+output/
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
 
-# IDE
+# IDE / tooling
 .vscode/
 .idea/
+.claude/
 
 # macOS
 .DS_Store

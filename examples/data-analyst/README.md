@@ -29,7 +29,7 @@ The analyst **always** writes findings to the run scratch directory (`./runs/<ru
 |---|---|---|
 | `sql-query` | Bundled agentji (tool skill) | Executes SQL against Chinook SQLite |
 | `data-analysis` | [ClawHub — ivangdavila](https://clawhub.ai/ivangdavila/data-analysis) | Analytical methodology |
-| `docx-template` | Local (examples/data-analyst/skills) | python-docx helpers, brand colors, chart patterns |
+| `docx-template` | Local (examples/data-analyst/skills/) | python-docx helpers, brand colors, chart patterns |
 
 ---
 
@@ -52,24 +52,56 @@ pip install python-docx matplotlib
 
 ```bash
 export MOONSHOT_API_KEY=your_key      # moonshot.ai or moonshot.cn — auto-detected
-export DASHSCOPE_API_KEY=your_key     # Qwen + MiniMax via DashScope
+export DASHSCOPE_API_KEY=your_key     # Qwen + MiniMax + GLM via DashScope
 ```
 
-**4. Run**
+**4. Run — CLI**
 
 ```bash
 agentji run --config agentji.yaml --agent orchestrator \
-  --prompt "Which markets and genres should we prioritise for growth? \
-Produce a full strategic report."
+  --prompt "Which markets and genres should we prioritise for growth?"
 ```
 
-**5. Open the outputs**
+**5. Run — Studio (browser UI + API)**
 
-Outputs are written to `./runs/<run_id>/` — the run ID is shown in the agent log. For example:
+```bash
+pip install "agentji[serve]"
+agentji serve --studio
+```
+
+Open [http://localhost:8000](http://localhost:8000) and chat directly with the pipeline.
+
+**6. Open the outputs**
+
+Outputs are written to `./runs/<run_id>/`. For example:
 
 ```bash
 cat runs/a1b2c3d4/analyst_output.md        # structured analysis with all tables
 open runs/a1b2c3d4/growth_strategy.docx    # branded Word document
+```
+
+---
+
+## Test scripts
+
+Two scripts are included for smoke-testing the running server:
+
+```bash
+# Start the server first
+agentji serve --studio --port 8000
+
+# Smoke test: 2 data questions + session end
+python test_api.py
+
+# Improvement test: 2-turn conversation with correction + hint, verify improvements.jsonl
+python test_improvement.py
+```
+
+For a faster improvement test that doesn't need the server:
+
+```bash
+cd ../..
+pytest tests/test_improvement_e2e.py -v -s -m integration
 ```
 
 ---
@@ -96,11 +128,13 @@ The analyst runs SQL, not `SELECT *`. Three of the queries it runs on every full
 
 ```sql
 -- Revenue and customers by market
-SELECT BillingCountry,
-       ROUND(SUM(Total), 2)            AS Revenue,
-       COUNT(DISTINCT CustomerId)      AS Customers
-FROM Invoice
-GROUP BY BillingCountry
+SELECT c.Country,
+       ROUND(SUM(il.UnitPrice * il.Quantity), 2)  AS Revenue,
+       COUNT(DISTINCT i.CustomerId)               AS Customers
+FROM Invoice i
+JOIN Customer c    ON i.CustomerId = c.CustomerId
+JOIN InvoiceLine il ON i.InvoiceId = il.InvoiceId
+GROUP BY c.Country
 ORDER BY Revenue DESC;
 
 -- Revenue, track count, and unit economics by genre
@@ -145,37 +179,25 @@ The reporter then converts this into `./runs/<run_id>/growth_strategy.docx` — 
 
 ## More prompts to try
 
-```bash
+```
 # Quick data question — no report
-"Which country generates the most revenue? Show the top 5."
+Which country generates the most revenue? Show the top 5.
 
 # Trend analysis
-"Is total revenue growing or declining year-over-year? Flag any markets at risk."
+Is total revenue growing or declining year-over-year? Flag any markets at risk.
 
 # Genre deep-dive
-"Which genres are high-margin but low-volume? Where should we invest in catalogue depth?"
+Which genres are high-margin but low-volume? Where should we invest in catalogue depth?
 
 # Cross-analysis
-"Which markets are under-indexed on Latin music relative to their revenue size?"
+Which markets are under-indexed on Latin music relative to their revenue size?
 
 # Full pipeline
-"Full growth strategy report."
+Full growth strategy report.
 
 # Format existing content — reporter only, no analyst
-"Format this text into a branded Word doc: ..."
+Format this text into a branded Word doc: ...
 ```
-
----
-
-## Skill sources
-
-| Skill | Type | Source | Reference name |
-|---|---|---|---|
-| `sql-query` | tool | Bundled | `sql-query` |
-| `data-analysis` | prompt | [clawhub: data-analysis v1.0.2](https://clawhub.ai/skills/data-analysis) | `data-analysis` (slug) |
-| `docx-template` | prompt | Local | `docx-template` |
-
-Agents reference skills by the `slug:` field in SKILL.md (if present), otherwise by `name:`. This means renaming a folder for versioning (`data-analysis-1.0.3/`) doesn't break the agent config — the slug stays stable.
 
 ---
 
@@ -192,3 +214,18 @@ analyst:
 reporter:
   model: anthropic/claude-haiku-4-5
 ```
+
+---
+
+## Skill improvement
+
+Enable post-session extraction of corrections and hints to each skill's `improvements.jsonl`:
+
+```yaml
+improvement:
+  enabled: true
+  model: null     # null = inherit orchestrator model
+  skills: []      # empty = all loaded skills
+```
+
+Or pass `"improve": true` per request when calling the API. The Studio checkbox controls it per session.

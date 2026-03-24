@@ -164,8 +164,7 @@ agents:
          in the brief.** Use write_file. This is not optional.
       3. **Confirm the file path** in your final response so the orchestrator
          knows where to find it.
-      4. **Show exact figures** — "$523.06" not "about $520". Percentages
-         to one decimal place. Cite the query that produced each number.
+      4. **Show exact figures** — Percentages to one decimal place. Cite the query that produced each number.
       5. **Flag data gaps.** If the data cannot answer part of the question,
          say so explicitly — do not fill gaps with estimates.
 
