@@ -7,14 +7,13 @@ name = "agentji"
 version = "0.10.0"
 description = "Universal configuration and execution layer for AI agents"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Winston Wang Qi" }]
 requires-python = ">=3.10"
 keywords = ["agent", "llm", "mcp", "qwen", "litellm", "langgraph", "openai", "chinese-llm"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -50,6 +49,9 @@ agentji = "agentji.cli:app"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["agentji*"]
+
+[tool.setuptools.package-data]
+agentji = ["studio/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
