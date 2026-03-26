@@ -293,3 +293,230 @@ class TestImprovementConfig:
         cfg = load_config(p)
         assert cfg.improvement.enabled is True
         assert cfg.improvement.model is None
+
+
+# ── New fields: parallel_agents, memory, studio.custom_ui ─────────────────────
+
+class TestNewV0101Fields:
+    def test_parallel_agents_default_true(self, tmp_path: Path) -> None:
+        p = write_yaml(tmp_path, MINIMAL_CONFIG)
+        cfg = load_config(p)
+        assert cfg.agents["qa"].parallel_agents is True
+
+    def test_parallel_agents_can_be_disabled(self, tmp_path: Path) -> None:
+        content = """
+            version: "1"
+            providers:
+              openai:
+                api_key: sk-test
+            agents:
+              qa:
+                model: openai/gpt-4o-mini
+                system_prompt: You are a helpful assistant.
+                parallel_agents: false
+        """
+        p = write_yaml(tmp_path, content)
+        cfg = load_config(p)
+        assert cfg.agents["qa"].parallel_agents is False
+
+    def test_memory_config_local_defaults(self, tmp_path: Path) -> None:
+        content = """
+            version: "1"
+            providers:
+              openai:
+                api_key: sk-test
+            memory:
+              backend: local
+              user_id: winston
+            agents:
+              qa:
+                model: openai/gpt-4o-mini
+                system_prompt: You are a helpful assistant.
+        """
+        p = write_yaml(tmp_path, content)
+        cfg = load_config(p)
+        assert cfg.memory is not None
+        assert cfg.memory.backend == "local"
+        assert cfg.memory.compression == "auto"
+        assert cfg.memory.ltm_path == ".agentji/memory"
+        assert cfg.memory.inject_limit == 5
+        assert cfg.memory.auto_remember is True
+
+    def test_memory_compression_options(self, tmp_path: Path) -> None:
+        for compression in ["off", "auto", "aggressive"]:
+            content = f"""
+                version: "1"
+                providers:
+                  openai:
+                    api_key: sk-test
+                memory:
+                  backend: local
+                  user_id: testuser
+                  compression: {compression}
+                agents:
+                  qa:
+                    model: openai/gpt-4o-mini
+                    system_prompt: test
+            """
+            p = write_yaml(tmp_path, content)
+            cfg = load_config(p)
+            assert cfg.memory.compression == compression
+
+    def test_memory_none_by_default(self, tmp_path: Path) -> None:
+        p = write_yaml(tmp_path, MINIMAL_CONFIG)
+        cfg = load_config(p)
+        assert cfg.memory is None
+
+    def test_studio_custom_ui_field(self, tmp_path: Path) -> None:
+        content = """
+            version: "1"
+            providers:
+              openai:
+                api_key: sk-test
+            studio:
+              custom_ui: ./my-ui/dist/index.html
+            agents:
+              qa:
+                model: openai/gpt-4o-mini
+                system_prompt: You are a helpful assistant.
+        """
+        p = write_yaml(tmp_path, content)
+        cfg = load_config(p)
+        assert cfg.studio.custom_ui == "./my-ui/dist/index.html"
+
+    def test_studio_custom_ui_default_none(self, tmp_path: Path) -> None:
+        p = write_yaml(tmp_path, MINIMAL_CONFIG)
+        cfg = load_config(p)
+        assert cfg.studio.custom_ui is None
+
+
+# ── Vertex AI / GCP service-account auth ──────────────────────────────────────
+
+class TestVertexAIConfig:
+    def test_vertex_credentials_file_parsed(self, tmp_path: Path) -> None:
+        content = """
+            version: "1"
+            providers:
+              vertex_ai:
+                api_key: ""
+                vertex_credentials_file: ./vertex_sa.json
+            agents:
+              gemini:
+                model: vertex_ai/gemini-1.5-pro
+                system_prompt: You are helpful.
+        """
+        p = write_yaml(tmp_path, content)
+        cfg = load_config(p)
+        assert cfg.providers["vertex_ai"].vertex_credentials_file == "./vertex_sa.json"
+
+    def test_vertex_api_key_defaults_to_empty_string(self, tmp_path: Path) -> None:
+        """api_key now defaults to '' so Vertex AI configs can omit it."""
+        content = """
+            version: "1"
+            providers:
+              vertex_ai:
+                vertex_credentials_file: ./vertex_sa.json
+            agents:
+              gemini:
+                model: vertex_ai/gemini-1.5-pro
+                system_prompt: You are helpful.
+        """
+        p = write_yaml(tmp_path, content)
+        cfg = load_config(p)
+        assert cfg.providers["vertex_ai"].api_key == ""
+
+    def test_vertex_no_credentials_file_is_none(self, tmp_path: Path) -> None:
+        p = write_yaml(tmp_path, MINIMAL_CONFIG)
+        cfg = load_config(p)
+        assert cfg.providers["openai"].vertex_credentials_file is None
+
+    def test_vertex_credentials_file_with_env_interpolation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SA_PATH", "/secrets/sa.json")
+        content = """
+            version: "1"
+            providers:
+              vertex_ai:
+                vertex_credentials_file: ${SA_PATH}
+            agents:
+              gemini:
+                model: vertex_ai/gemini-1.5-pro
+                system_prompt: You are helpful.
+        """
+        p = write_yaml(tmp_path, content)
+        cfg = load_config(p)
+        assert cfg.providers["vertex_ai"].vertex_credentials_file == "/secrets/sa.json"
+
+
+# ── output_format on AgentConfig ──────────────────────────────────────────────
+
+class TestOutputFormat:
+    def test_output_format_defaults_to_text(self, tmp_path: Path) -> None:
+        p = write_yaml(tmp_path, MINIMAL_CONFIG)
+        cfg = load_config(p)
+        assert cfg.agents["qa"].output_format == "text"
+
+    def test_output_format_image(self, tmp_path: Path) -> None:
+        content = """
+            version: "1"
+            providers:
+              openai:
+                api_key: sk-test
+            agents:
+              painter:
+                model: openai/gpt-4o
+                system_prompt: You generate images.
+                output_format: image
+        """
+        p = write_yaml(tmp_path, content)
+        cfg = load_config(p)
+        assert cfg.agents["painter"].output_format == "image"
+
+    def test_output_format_audio(self, tmp_path: Path) -> None:
+        content = """
+            version: "1"
+            providers:
+              openai:
+                api_key: sk-test
+            agents:
+              narrator:
+                model: openai/gpt-4o
+                system_prompt: You generate audio.
+                output_format: audio
+        """
+        p = write_yaml(tmp_path, content)
+        cfg = load_config(p)
+        assert cfg.agents["narrator"].output_format == "audio"
+
+    def test_output_format_video(self, tmp_path: Path) -> None:
+        content = """
+            version: "1"
+            providers:
+              openai:
+                api_key: sk-test
+            agents:
+              director:
+                model: openai/gpt-4o
+                system_prompt: You generate video.
+                output_format: video
+        """
+        p = write_yaml(tmp_path, content)
+        cfg = load_config(p)
+        assert cfg.agents["director"].output_format == "video"
+
+    def test_invalid_output_format_raises(self, tmp_path: Path) -> None:
+        content = """
+            version: "1"
+            providers:
+              openai:
+                api_key: sk-test
+            agents:
+              qa:
+                model: openai/gpt-4o
+                system_prompt: You are helpful.
+                output_format: binary
+        """
+        p = write_yaml(tmp_path, content)
+        with pytest.raises(Exception):
+            load_config(p)

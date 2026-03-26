@@ -452,8 +452,16 @@ async def cancel_run(run_id: str) -> dict:
 
 @app.get("/")
 async def serve_studio():
-    if _studio_enabled and STUDIO_HTML.exists():
-        return FileResponse(STUDIO_HTML)
+    if _studio_enabled:
+        # Custom UI overrides the built-in Studio when configured.
+        if _cfg and _cfg.studio.custom_ui:
+            custom_path = pathlib.Path(_cfg.studio.custom_ui)
+            if not custom_path.is_absolute():
+                custom_path = pathlib.Path.cwd() / custom_path
+            if custom_path.exists():
+                return FileResponse(custom_path)
+        if STUDIO_HTML.exists():
+            return FileResponse(STUDIO_HTML)
     return JSONResponse(
         content={
             "message": (
@@ -485,6 +493,7 @@ async def pipeline_topology() -> dict:
             "mcps": list(agent.mcps),
             "builtins": list(agent.builtins),
             "sub_agents": list(agent.agents),
+            "output_format": getattr(agent, "output_format", "text"),
             "inputs": [{"key": i.key, "description": i.description} for i in agent.inputs],
             "outputs": [{"key": o.key, "description": o.description} for o in agent.outputs],
         }

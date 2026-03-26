@@ -138,11 +138,27 @@ def build_litellm_kwargs(
         model_name = model_string.split("/", 1)[1]
         model_string = f"openai/{model_name}"
 
-    kwargs: dict[str, Any] = {
-        "model": model_string,
-        "api_key": provider.api_key,
-    }
+    kwargs: dict[str, Any] = {"model": model_string}
+
+    # Only pass api_key when non-empty (e.g. service-account auth has no key)
+    if provider.api_key:
+        kwargs["api_key"] = provider.api_key
+
     if resolved_base_url:
         kwargs["api_base"] = resolved_base_url
+
+    # ── Vertex AI service-account credentials ────────────────────────────────
+    if provider.vertex_credentials_file:
+        import json as _json
+        from pathlib import Path as _Path
+        creds_path = _Path(provider.vertex_credentials_file)
+        if not creds_path.is_absolute():
+            creds_path = _Path.cwd() / creds_path
+        try:
+            kwargs["vertex_credentials"] = creds_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(
+                f"Cannot read vertex_credentials_file '{creds_path}': {exc}"
+            ) from exc
 
     return kwargs

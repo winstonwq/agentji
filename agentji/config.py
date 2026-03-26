@@ -58,7 +58,14 @@ def _interpolate(value: Any) -> Any:
 class ProviderConfig(BaseModel):
     """LLM provider credentials and endpoint."""
 
-    api_key: str = Field(..., description="API key for this provider.")
+    api_key: str = Field(
+        "",
+        description=(
+            "API key for this provider. "
+            "May be left empty when authenticating via a service-account file "
+            "(e.g. Google Cloud Vertex AI with vertex_credentials_file)."
+        ),
+    )
     base_url: str | None = Field(
         None,
         description="Optional custom base URL (e.g. for DashScope or a local proxy).",
@@ -70,6 +77,16 @@ class ProviderConfig(BaseModel):
             "Useful for providers with separate regional endpoints "
             "(e.g. api.moonshot.ai vs api.moonshot.cn). "
             "agentji probes both on first use and caches the working one."
+        ),
+    )
+    vertex_credentials_file: str | None = Field(
+        None,
+        description=(
+            "Path to a Google Cloud service-account JSON file for Vertex AI authentication. "
+            "Relative paths are resolved from the working directory where agentji is launched. "
+            "When set, the JSON is read and passed to litellm as vertex_credentials, "
+            "so api_key can be left empty. "
+            "Only relevant for providers using vertex_ai/* model strings."
         ),
     )
 
@@ -106,12 +123,43 @@ class AgentInput(BaseModel):
 
 
 class MemoryConfig(BaseModel):
-    """Cross-run memory configuration (stubbed until mem0 integration is implemented)."""
+    """In-session and cross-run memory configuration."""
 
-    backend: Literal["mem0"] = Field("mem0", description="Memory backend. Only 'mem0' is supported.")
+    backend: Literal["local", "mem0"] = Field(
+        "local",
+        description=(
+            "'local' — built-in file-based LTM + sliding window compression (no extra dependencies). "
+            "'mem0' — reserved for future mem0 integration."
+        ),
+    )
     user_id: str = Field(..., description="User identifier for memory scoping.")
-    auto_remember: bool = Field(True, description="Automatically store run summaries after each run.")
-    inject_limit: int = Field(5, ge=1, description="Maximum number of memories to inject into the system prompt.")
+    auto_remember: bool = Field(True, description="Automatically extract and store key facts after each run.")
+    inject_limit: int = Field(5, ge=1, description="Maximum number of past-session facts to inject into the system prompt.")
+    # Sliding window compression
+    compression: Literal["off", "auto", "aggressive"] = Field(
+        "auto",
+        description=(
+            "'off'        — no compression, full history always sent. "
+            "'auto'       — compress when context is ~75%% full, keep most recent ~40%% verbatim. "
+            "               Uses token counts when the model's context window is known to litellm; "
+            "               falls back to a 40-message heuristic for unknown models. "
+            "'aggressive' — compress at ~50%% full, keep ~20%% verbatim (good for small-context models). "
+            "               Falls back to 20 messages."
+        ),
+    )
+    # LTM storage (local backend)
+    ltm_path: str = Field(
+        ".agentji/memory",
+        description="Directory for local LTM storage. A JSONL file per user_id is written here.",
+    )
+
+    @field_validator("compression", mode="before")
+    @classmethod
+    def _coerce_compression(cls, v: object) -> object:
+        # YAML parses bare 'off' as boolean False; map it back to the string literal.
+        if v is False:
+            return "off"
+        return v
 
 
 class AgentConfig(BaseModel):
@@ -148,6 +196,15 @@ class AgentConfig(BaseModel):
             "set this higher, e.g. 120 or 300."
         ),
     )
+    parallel_agents: bool = Field(
+        True,
+        description=(
+            "When True (default), multiple call_agent tool calls emitted in a single "
+            "LLM response are dispatched concurrently rather than sequentially. "
+            "Only applies when the LLM chooses to emit ≥2 call_agent calls at once. "
+            "Set to False to force sequential sub-agent execution."
+        ),
+    )
     builtins: list[str] = Field(
         default_factory=list,
         description=(
@@ -159,6 +216,19 @@ class AgentConfig(BaseModel):
     agents: list[str] = Field(
         default_factory=list,
         description="Sub-agent names this agent can delegate to (orchestrator use).",
+    )
+    output_format: Literal["text", "image", "audio", "video"] = Field(
+        "text",
+        description=(
+            "Declared output format for this agent's final response. "
+            "'text' (default) — plain text or markdown. "
+            "'image' — the final response is a file path to an image the agent produced. "
+            "'audio' — the final response is a file path to an audio file. "
+            "'video' — the final response is a file path to a video file. "
+            "Non-text formats are rendered inline in the Studio UI and served via /v1/files/. "
+            "Only meaningful for non-main (sub-)agents called via call_agent; "
+            "the orchestrator receives the path as a string."
+        ),
     )
     outputs: list[AgentOutput] = Field(
         default_factory=list,
@@ -242,6 +312,15 @@ class StudioConfig(BaseModel):
         ge=1,
         description="Maximum number of user+assistant exchange pairs to keep in session history.",
     )
+    custom_ui: str | None = Field(
+        None,
+        description=(
+            "Path to a custom single-file HTML UI to serve at GET / instead of the built-in Studio. "
+            "Relative paths are resolved from the working directory where agentji serve is launched. "
+            "The entire /v1/ API surface remains unchanged — your UI talks to the same endpoints. "
+            "Only active when --studio flag is passed."
+        ),
+    )
 
 
 class ImprovementConfig(BaseModel):
@@ -313,7 +392,13 @@ class AgentjiConfig(BaseModel):
         description="Optional log rotation and retention configuration.",
     )
     memory: MemoryConfig | None = Field(
-        None, description="Optional cross-run memory config (stubbed until mem0 integration)."
+        None,
+        description=(
+            "Optional memory configuration. "
+            "When set, enables sliding window compression (within each run) and "
+            "LTM fact injection/extraction (across runs). "
+            "backend: 'local' requires no extra dependencies."
+        ),
     )
 
     @field_validator("version")

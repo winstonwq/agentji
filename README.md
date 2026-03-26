@@ -2,7 +2,7 @@
 
 Run any agent skill on any model. One YAML file.
 
-Anthropic's official skills — `docx`, `brand-guidelines`, `data-analysis` — work here unchanged, on Qwen, Kimi, MiniMax, or a local Ollama model. Swap the model with one config line. No code changes.
+Anthropic's official skills, Clawhub skills — `docx`, `brand-guidelines`, `data-analysis` — work here unchanged, on Qwen, Kimi, MiniMax, or a local Ollama model. Swap the model with one config line. No code changes.
 
 ```yaml
 agents:
@@ -200,12 +200,97 @@ studio:
 └──────────────┴────────────────────────┴─────────────┘
 ```
 
+### Custom Studio UI
+
+Replace the built-in Studio with your own single-file HTML app:
+
+```yaml
+studio:
+  custom_ui: ./my-ui/dist/index.html   # served at GET / instead of built-in Studio
+```
+
+The path is relative to the directory where `agentji serve` is launched. The entire `/v1/` API remains unchanged — your UI talks to the same endpoints.
+
+**API your UI can use:**
+
+| Endpoint | Description |
+|---|---|
+| `POST /v1/chat/completions` | Send a message; streaming or JSON; returns `X-Agentji-Run-Id` |
+| `GET /v1/events/{run_id}` | SSE stream of live agent events for a run |
+| `GET /v1/pipeline` | Pipeline topology — agents, skills, stateful mode |
+| `POST /v1/sessions/{id}/end` | End a session, trigger improvement extraction |
+| `GET /v1/files/{path}` | Download a file produced by the agent |
+
+**Minimal vanilla HTML example:**
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+  <input id="msg" placeholder="Ask something…" style="width:400px" />
+  <button onclick="send()">Send</button>
+  <pre id="out"></pre>
+  <script>
+  const SESSION = crypto.randomUUID();
+
+  async function send() {
+    const msg = document.getElementById('msg').value;
+    const out = document.getElementById('out');
+    out.textContent = '';
+
+    const res = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Agentji-Session-Id': SESSION,
+      },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: msg }],
+        stream: true,
+        stateful: true,
+      }),
+    });
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      // Each chunk is a Server-Sent Event line: "data: <token>\n\n"
+      const lines = dec.decode(value).split('\n');
+      for (const line of lines) {
+        if (line.startsWith('data: ')) out.textContent += line.slice(6);
+      }
+    }
+  }
+  </script>
+</body>
+</html>
+```
+
+**Using a framework (React, Vue, Svelte):**
+
+Build to a single inlined HTML file using [`vite-plugin-singlefile`](https://github.com/richardtallent/vite-plugin-singlefile):
+
+```bash
+npm install -D vite-plugin-singlefile
+# add to vite.config.ts: plugins: [viteSingleFile()]
+vite build
+# output: dist/index.html — a self-contained file, no separate JS/CSS assets
+```
+
+**Tips:**
+- Read `X-Agentji-Run-Id` from each response header to subscribe to `GET /v1/events/{run_id}` for live tool-call visibility
+- `GET /v1/pipeline` returns the full agent graph — useful for building a sidebar or status display
+- Use `X-Agentji-Session-Id` on every request and `stateful: true` to maintain conversation history
+
 - Parallel tool calls grouped with a left border
 - `context_write` / `context_read` events in amber — file handoffs between agents
 - Orchestrator step tracker — live phase list with pending → running → done status
 - Iteration limit banner with **Continue** button — never lose work at `max_iterations`
 - **■ Stop** button — cancel a run at the next iteration boundary
 - File download links — `.docx`, `.csv`, `.md` paths become clickable
+- **Inline media rendering** — image paths (`.png`, `.jpg`, `.gif`, `.webp`, `.svg`) render as embedded images; audio (`.mp3`, `.wav`, `.ogg`) and video (`.mp4`, `.webm`) render with HTML5 players
 - **Stateful toggle** — switch between stateful and stateless sessions in the header
 - **Skill improvement checkbox** — opt individual sessions in/out of improvement extraction
 
@@ -254,6 +339,7 @@ These replicate the native tools Claude Code provides, enabling prompt skills th
 | Kimi (Moonshot) | `moonshot/kimi-k2.5` | `fallback_base_url` for China/global auto-detect |
 | Anthropic | `anthropic/claude-haiku-4-5` | No `base_url` needed |
 | OpenAI | `openai/gpt-4o` | |
+| Google Vertex AI | `vertex_ai/gemini-1.5-pro` | Service-account JSON auth via `vertex_credentials_file` |
 | Ollama (local) | `ollama/qwen3:4b` | Free, runs offline, no API key |
 | Any litellm provider | — | [full list →](https://litellm.ai) |
 
@@ -266,6 +352,22 @@ providers:
     base_url: https://api.moonshot.ai/v1
     fallback_base_url: https://api.moonshot.cn/v1   # auto-probed on first use
 ```
+
+**Google Cloud / Vertex AI** — authenticate with a service-account JSON file instead of an API key:
+
+```yaml
+providers:
+  vertex_ai:
+    vertex_credentials_file: ./vertex_sa.json   # path to GCP service-account JSON
+    # api_key can be omitted for service-account auth
+
+agents:
+  gemini:
+    model: vertex_ai/gemini-1.5-pro
+    system_prompt: "You are helpful."
+```
+
+The JSON file is read at runtime and passed to litellm as `vertex_credentials`. Use `${VERTEX_SA_JSON_PATH}` to interpolate the path from an environment variable.
 
 ---
 
@@ -294,8 +396,16 @@ providers:
 - [x] Per-agent tool timeout (tool_timeout in agentji.yaml)
 - [x] Run cancellation (POST /v1/cancel/{run_id})
 
+- [x] Parallel sub-agent dispatch (concurrent call_agent fan-out)
+- [x] In-session sliding window compression (token-based, auto/aggressive presets)
+- [x] Long-term memory — LTM injection + fact extraction across runs
+- [x] Custom Studio UI (single-file HTML override via `studio.custom_ui`)
+- [x] Google Cloud Vertex AI service-account JSON authentication (`vertex_credentials_file`)
+- [x] Agent `output_format` declaration (text / image / audio / video)
+- [x] Studio inline media rendering — images, audio, video embedded directly in chat
+
 **Coming**
-- [ ] Parallel sub-agent dispatch
+- [ ] Skill improvement injection (auto-apply corrections to future system prompts)
 - [ ] Persistent memory (mem0 / Zep)
 - [ ] Plugin system for community skill registries
 

@@ -130,6 +130,9 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); font
 .msg-resp pre code { background: none; padding: 0; }
 .msg-resp a.file-dl { color: var(--teal); font-family: var(--mono); font-size: 11px; text-decoration: none; border-bottom: 1px dashed rgba(63,185,80,.4); }
 .msg-resp a.file-dl:hover { border-bottom-style: solid; }
+.msg-resp img.resp-img { max-width: 100%; max-height: 420px; border-radius: 6px; margin-top: 6px; display: block; border: 1px solid var(--border); }
+.msg-resp audio.resp-audio { max-width: 100%; margin-top: 6px; display: block; }
+.msg-resp video.resp-video { max-width: 100%; max-height: 320px; border-radius: 6px; margin-top: 6px; display: block; border: 1px solid var(--border); }
 .msg-resp table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 12px; }
 .msg-resp th, .msg-resp td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
 .msg-resp th { background: rgba(255,255,255,.05); font-weight: 600; }
@@ -397,15 +400,33 @@ function md(text) {
 
   function inline(s) {
     // File path segment: any non-whitespace, non-HTML, non-backtick char — matches Unicode filenames
-    const ext     = '(?:docx|pdf|csv|xlsx|txt|md|json|png|jpg|jpeg|zip|gz)';
+    const ext     = '(?:docx|pdf|csv|xlsx|txt|md|json|png|jpg|jpeg|gif|webp|svg|mp3|wav|ogg|m4a|flac|mp4|webm|mov|zip|gz)';
     const seg     = '[^\\s<>"\'\\x60]+';
     const pathPat = '(?:' + seg + '\\/)+'  + seg + '\\.' + ext;
-    const mkLink  = p => '<a class="file-dl" href="' + API + '/v1/files/' + p.replace(/^\.\//, '') + '" download>' + p + '</a>';
+    const clean   = p => p.replace(/^\.\//, '');
+    const mkLink  = p => '<a class="file-dl" href="' + API + '/v1/files/' + clean(p) + '" download>' + p + '</a>';
+    const IMG_EXTS  = new Set(['png','jpg','jpeg','gif','webp','svg']);
+    const AUDIO_EXTS = new Set(['mp3','wav','ogg','m4a','flac']);
+    const VIDEO_EXTS = new Set(['mp4','webm','mov']);
+    const mkMedia = p => {
+      const ext = p.split('.').pop().toLowerCase();
+      const url = API + '/v1/files/' + clean(p);
+      if (IMG_EXTS.has(ext)) {
+        return mkLink(p) + '<br><img class="resp-img" src="' + url + '" alt="' + p + '" onerror="this.style.display=\'none\'">';
+      }
+      if (AUDIO_EXTS.has(ext)) {
+        return mkLink(p) + '<br><audio class="resp-audio" controls><source src="' + url + '"></audio>';
+      }
+      if (VIDEO_EXTS.has(ext)) {
+        return mkLink(p) + '<br><video class="resp-video" controls><source src="' + url + '"></video>';
+      }
+      return mkLink(p);
+    };
     return esc(s)
-      // backtick-wrapped file paths → download link (before backtick→code conversion)
-      .replace(new RegExp('\\x60(' + pathPat + ')\\x60', 'g'), (_, p) => mkLink(p))
-      // bare file paths → download link; skip anything containing :// (URLs)
-      .replace(new RegExp('(' + pathPat + ')', 'g'), (match, p) => p.includes('://') ? match : mkLink(p))
+      // backtick-wrapped file paths → media or download link (before backtick→code conversion)
+      .replace(new RegExp('\\x60(' + pathPat + ')\\x60', 'g'), (_, p) => mkMedia(p))
+      // bare file paths → media or download link; skip anything containing :// (URLs)
+      .replace(new RegExp('(' + pathPat + ')', 'g'), (match, p) => p.includes('://') ? match : mkMedia(p))
       .replace(/`(.+?)`/g, '<code>$1</code>')
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/\*(.+?)\*/g, '<em>$1</em>');

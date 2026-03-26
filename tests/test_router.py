@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agentji.config import ProviderConfig
+from agentji.config import AgentjiConfig, ProviderConfig
 from agentji.router import (
     _cache_key,
     _probe,
@@ -221,3 +221,86 @@ class TestBuildLitellmKwargsWithFallback:
              patch("agentji.router._probe", side_effect=[False, True]):
             kwargs = build_litellm_kwargs(cfg, "kimi")
         assert kwargs["api_base"] == "https://api.moonshot.cn/v1"
+
+
+# ── Vertex AI credentials ───────────────────────────────────────────────────────
+
+class TestVertexAICredentials:
+    """Tests for Google Cloud service-account JSON authentication."""
+
+    def _make_vertex_cfg(self, sa_path: str) -> "AgentjiConfig":
+        from agentji.config import AgentjiConfig
+        return AgentjiConfig.model_validate({
+            "version": "1",
+            "providers": {
+                "vertex_ai": {
+                    "api_key": "",
+                    "vertex_credentials_file": sa_path,
+                }
+            },
+            "agents": {
+                "gemini": {
+                    "model": "vertex_ai/gemini-1.5-pro",
+                    "system_prompt": "You are helpful.",
+                }
+            },
+        })
+
+    def test_vertex_credentials_loaded_into_kwargs(self, tmp_path: Path) -> None:
+        """vertex_credentials_file is read and passed as vertex_credentials JSON string."""
+        sa = {"type": "service_account", "project_id": "my-project", "client_email": "sa@my-project.iam.gserviceaccount.com"}
+        sa_file = tmp_path / "vertex_sa.json"
+        sa_file.write_text(json.dumps(sa))
+
+        cfg = self._make_vertex_cfg(str(sa_file))
+        kwargs = build_litellm_kwargs(cfg, "gemini")
+
+        assert "vertex_credentials" in kwargs
+        parsed = json.loads(kwargs["vertex_credentials"])
+        assert parsed["project_id"] == "my-project"
+        assert parsed["type"] == "service_account"
+
+    def test_vertex_model_not_remapped_to_openai_prefix(self, tmp_path: Path) -> None:
+        """Vertex AI providers have no base_url, so model stays as vertex_ai/..."""
+        sa_file = tmp_path / "sa.json"
+        sa_file.write_text(json.dumps({"type": "service_account"}))
+
+        cfg = self._make_vertex_cfg(str(sa_file))
+        kwargs = build_litellm_kwargs(cfg, "gemini")
+
+        assert kwargs["model"] == "vertex_ai/gemini-1.5-pro"
+        assert not kwargs["model"].startswith("openai/")
+
+    def test_empty_api_key_not_included_in_kwargs(self, tmp_path: Path) -> None:
+        """Empty api_key should be omitted from litellm kwargs."""
+        sa_file = tmp_path / "sa.json"
+        sa_file.write_text(json.dumps({"type": "service_account"}))
+
+        cfg = self._make_vertex_cfg(str(sa_file))
+        kwargs = build_litellm_kwargs(cfg, "gemini")
+
+        # api_key should not be present (or be empty) when provider.api_key == ""
+        assert "api_key" not in kwargs or kwargs.get("api_key") == ""
+
+    def test_missing_credentials_file_raises(self, tmp_path: Path) -> None:
+        """A vertex_credentials_file that doesn't exist should raise ValueError."""
+        cfg = self._make_vertex_cfg("/nonexistent/path/sa.json")
+        with pytest.raises(ValueError, match="vertex_credentials_file"):
+            build_litellm_kwargs(cfg, "gemini")
+
+    def test_non_vertex_provider_with_api_key_works(self, tmp_path: Path) -> None:
+        """Standard providers (OpenAI, etc.) still pass api_key normally."""
+        from agentji.config import AgentjiConfig
+        cfg = AgentjiConfig.model_validate({
+            "version": "1",
+            "providers": {"openai": {"api_key": "sk-live"}},
+            "agents": {
+                "assistant": {
+                    "model": "openai/gpt-4o",
+                    "system_prompt": "Be helpful.",
+                }
+            },
+        })
+        kwargs = build_litellm_kwargs(cfg, "assistant")
+        assert kwargs["api_key"] == "sk-live"
+        assert "vertex_credentials" not in kwargs

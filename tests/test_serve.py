@@ -318,3 +318,135 @@ def test_stateful_true_forwards_history():
 
     assert captured_history[0] is not None
     assert any(m["role"] == "user" and m["content"] == "first" for m in captured_history[0])
+
+
+# ── Custom Studio UI ───────────────────────────────────────────────────────────
+
+def test_custom_ui_served_when_configured(tmp_path):
+    """GET / serves the custom HTML file when studio.custom_ui is set."""
+    import agentji.server as sm
+    from agentji.config import StudioConfig
+
+    custom_html = tmp_path / "my-ui.html"
+    custom_html.write_text("<html><body>custom</body></html>", encoding="utf-8")
+
+    original_custom_ui = sm._cfg.studio.custom_ui if hasattr(sm._cfg, "studio") else None
+    sm._cfg.studio = StudioConfig(custom_ui=str(custom_html))
+    sm._studio_enabled = True
+
+    try:
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers.get("content-type", "")
+        assert b"custom" in resp.content
+    finally:
+        sm._cfg.studio = StudioConfig(custom_ui=original_custom_ui)
+        sm._studio_enabled = False
+
+
+def test_missing_custom_ui_falls_back_to_builtin(tmp_path):
+    """GET / falls back to built-in Studio when custom_ui path does not exist."""
+    import agentji.server as sm
+    from agentji.config import StudioConfig
+
+    sm._cfg.studio = StudioConfig(custom_ui="/nonexistent/path/ui.html")
+    sm._studio_enabled = True
+
+    try:
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        # Falls back to built-in Studio (HTML) or JSON if studio HTML missing
+        assert resp.headers.get("content-type", "").startswith("text/html") or \
+               "application/json" in resp.headers.get("content-type", "")
+    finally:
+        sm._cfg.studio = StudioConfig()
+        sm._studio_enabled = False
+
+
+# ── output_format in pipeline endpoint ────────────────────────────────────────
+
+def test_pipeline_agent_includes_output_format():
+    """GET /v1/pipeline agent entries include output_format field (default 'text')."""
+    client = TestClient(app)
+    resp = client.get("/v1/pipeline")
+    assert resp.status_code == 200
+    data = resp.json()
+    agent_info = data["agents"]["assistant"]
+    assert "output_format" in agent_info
+    assert agent_info["output_format"] == "text"
+
+
+def test_pipeline_agent_output_format_image():
+    """Pipeline returns output_format='image' when agent config specifies it."""
+    import agentji.server as sm
+    from agentji.config import AgentConfig
+
+    original = sm._cfg.agents["assistant"]
+    sm._cfg.agents["assistant"] = AgentConfig.model_construct(
+        model="openai/gpt-4o",
+        system_prompt="You render images.",
+        skills=[], mcps=[], builtins=[], agents=[],
+        outputs=[], inputs=[],
+        max_iterations=5,
+        output_format="image",
+    )
+    try:
+        client = TestClient(app)
+        resp = client.get("/v1/pipeline")
+        assert resp.status_code == 200
+        assert resp.json()["agents"]["assistant"]["output_format"] == "image"
+    finally:
+        sm._cfg.agents["assistant"] = original
+
+
+# ── /v1/files/ endpoint ───────────────────────────────────────────────────────
+
+def test_files_endpoint_serves_existing_file(tmp_path):
+    """GET /v1/files/{path} serves a file relative to CWD."""
+    import os
+    import agentji.server as sm
+
+    # Create a test file in a temp location accessible relative to CWD
+    # We'll monkeypatch Path.cwd in the test
+    test_file = tmp_path / "output.txt"
+    test_file.write_text("hello file content")
+
+    original_cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        client = TestClient(app)
+        resp = client.get("/v1/files/output.txt")
+        assert resp.status_code == 200
+        assert b"hello file content" in resp.content
+    finally:
+        os.chdir(original_cwd)
+
+
+def test_files_endpoint_returns_404_for_missing(tmp_path):
+    """GET /v1/files/{path} returns 404 when file doesn't exist."""
+    import os
+
+    original_cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        client = TestClient(app)
+        resp = client.get("/v1/files/nonexistent_file_xyz.txt")
+        assert resp.status_code == 404
+    finally:
+        os.chdir(original_cwd)
+
+
+def test_files_endpoint_blocks_path_traversal(tmp_path):
+    """GET /v1/files with ../ path traversal returns 403."""
+    import os
+
+    original_cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        client = TestClient(app)
+        resp = client.get("/v1/files/../../etc/passwd")
+        assert resp.status_code in (403, 404)
+    finally:
+        os.chdir(original_cwd)
