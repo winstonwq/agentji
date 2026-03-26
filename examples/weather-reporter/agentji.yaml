@@ -40,6 +40,18 @@ mcps:
 #   model: null     # null = use the default agent's model (qwen3:4b here)
 #   skills: []      # empty = all loaded skills
 
+# ── Model parameters (optional) ────────────────────────────────────────────────
+#
+#  Pass any litellm-compatible parameter directly to the model.
+#  Unsupported params are silently dropped — agentji logs a warning.
+#
+# agents:
+#   weather-reporter:
+#     model_params:
+#       temperature: 0.2   # lower = more factual, less creative
+#       seed: 42           # reproducibility (where supported)
+#       max_tokens: 1000
+
 # ── Agent ──────────────────────────────────────────────────────────────────────
 agents:
   weather-reporter:

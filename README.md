@@ -136,6 +136,101 @@ Sub-agent calls appear in the same log file — the entire pipeline in one JSONL
 
 ---
 
+## Model parameters
+
+Pass any litellm-compatible parameter directly to the model — per agent, no code changes:
+
+```yaml
+agents:
+  writer:
+    model: qwen/qwen-max
+    model_params:
+      temperature: 0.7      # creativity — 0.0 = deterministic, 1.0 = expressive
+      top_p: 0.9
+      max_tokens: 4000
+      seed: 42              # reproducibility (where supported by the model)
+
+  analyst:
+    model: openai/gpt-4o
+    model_params:
+      temperature: 0.0      # fully deterministic for numbers and SQL
+      presence_penalty: 0.1
+```
+
+Parameters unsupported by the target model are silently dropped (`drop_params=True`). agentji logs a warning listing what was passed, so you can verify intent without config errors. This means you can freely set `seed`, `top_k`, or any provider-specific param — if the model doesn't support it, it's ignored.
+
+---
+
+## Multimodal I/O
+
+Declare what each agent accepts and produces:
+
+```yaml
+agents:
+  vision-analyst:
+    model: qwen/qwen-vl-max
+    accepted_inputs: [text, image]   # agent accepts images alongside text
+    output_format: text
+
+  image-generator:
+    model: qwen/wanx2.1-t2i-plus
+    accepted_inputs: [text]
+    output_format: image             # final response is a path to the generated image
+```
+
+### Sending images as input
+
+**Via Studio** — click 📎 to attach images before sending. Files are uploaded to `.agentji/uploads/`, shown as thumbnail chips, and sent as base64 image content. When an agent returns an image path, Studio renders it inline.
+
+**Via API** — upload first, then include the returned path in the message:
+
+```bash
+# 1. Upload the file
+curl -X POST http://localhost:8000/v1/files/upload \
+  -F "file=@photo.png"
+# → {"path": ".agentji/uploads/a1b2c3d4.png", "filename": "a1b2c3d4.png"}
+
+# 2. Send as a multimodal message
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What colour is dominant in this image?"},
+        {"type": "image_url", "image_url": {"url": "http://localhost:8000/v1/media/.agentji/uploads/a1b2c3d4.png"}}
+      ]
+    }]
+  }'
+```
+
+### Passing images between agents
+
+Orchestrators pass images to sub-agents explicitly via `attachments`. The LLM decides when to include them; agentji base64-encodes the files and injects them as image content blocks into the sub-agent's first message:
+
+```yaml
+# The orchestrator LLM will emit:
+# call_agent(agent="vision", prompt="Describe this", attachments=["/path/to/img.png"])
+agents:
+  orchestrator:
+    model: qwen/qwen-max
+    agents: [vision, image-gen]
+
+  vision:
+    model: qwen/qwen-vl-max
+    accepted_inputs: [text, image]   # receives the image from orchestrator
+    output_format: text
+
+  image-gen:
+    model: qwen/wanx2.1-t2i-plus
+    accepted_inputs: [text]
+    output_format: image             # returns a local path; Studio renders it inline
+```
+
+Paths in `attachments` should be in the run scratch directory or `.agentji/uploads/`. The choice is explicit — the orchestrator decides which files each sub-agent receives.
+
+---
+
 ## MCP servers
 
 Declare an MCP server in YAML; agentji connects via FastMCP and exposes its tools to the agent automatically.
@@ -170,7 +265,10 @@ agentji serve --config agentji.yaml --port 8000 --studio
 |---|---|
 | `POST /v1/chat/completions` | OpenAI-compatible, streaming, returns `X-Agentji-Run-Id` header |
 | `GET /v1/events/{run_id}` | SSE stream of all agent events (tool calls, sub-agent delegations) |
-| `GET /v1/pipeline` | Pipeline topology JSON |
+| `GET /v1/pipeline` | Pipeline topology JSON (includes `accepted_inputs`, `output_format` per agent) |
+| `POST /v1/files/upload` | Upload a file; returns `{"path": "...", "filename": "..."}` for use in messages |
+| `GET /v1/media/{path}` | Serve a local file inline — used by Studio for image/audio/video rendering |
+| `GET /v1/files/{path}` | Download a file produced by the agent (attachment disposition) |
 | `POST /v1/sessions/{id}/end` | End a session and trigger skill improvement extraction |
 | `GET /` | agentji Studio (only when `--studio` flag is set) |
 
@@ -215,11 +313,13 @@ The path is relative to the directory where `agentji serve` is launched. The ent
 
 | Endpoint | Description |
 |---|---|
-| `POST /v1/chat/completions` | Send a message; streaming or JSON; returns `X-Agentji-Run-Id` |
+| `POST /v1/chat/completions` | Send a message (text or multimodal); streaming or JSON |
 | `GET /v1/events/{run_id}` | SSE stream of live agent events for a run |
-| `GET /v1/pipeline` | Pipeline topology — agents, skills, stateful mode |
-| `POST /v1/sessions/{id}/end` | End a session, trigger improvement extraction |
+| `GET /v1/pipeline` | Pipeline topology — agents, skills, accepted_inputs, output_format |
+| `POST /v1/files/upload` | Upload a file; returns path for use in multimodal messages |
+| `GET /v1/media/{path}` | Serve a file inline (image/audio/video rendering) |
 | `GET /v1/files/{path}` | Download a file produced by the agent |
+| `POST /v1/sessions/{id}/end` | End a session, trigger improvement extraction |
 
 **Minimal vanilla HTML example:**
 
@@ -289,8 +389,9 @@ vite build
 - Orchestrator step tracker — live phase list with pending → running → done status
 - Iteration limit banner with **Continue** button — never lose work at `max_iterations`
 - **■ Stop** button — cancel a run at the next iteration boundary
+- **📎 File upload** — attach images before sending; thumbnails shown as chips; images included as multimodal content
+- **Inline media rendering** — image paths (`.png`, `.jpg`, `.gif`, `.webp`) render as embedded images inline in chat; agent responses returning image file paths auto-render
 - File download links — `.docx`, `.csv`, `.md` paths become clickable
-- **Inline media rendering** — image paths (`.png`, `.jpg`, `.gif`, `.webp`, `.svg`) render as embedded images; audio (`.mp3`, `.wav`, `.ogg`) and video (`.mp4`, `.webm`) render with HTML5 players
 - **Stateful toggle** — switch between stateful and stateless sessions in the header
 - **Skill improvement checkbox** — opt individual sessions in/out of improvement extraction
 
@@ -403,6 +504,8 @@ The JSON file is read at runtime and passed to litellm as `vertex_credentials`. 
 - [x] Google Cloud Vertex AI service-account JSON authentication (`vertex_credentials_file`)
 - [x] Agent `output_format` declaration (text / image / audio / video)
 - [x] Studio inline media rendering — images, audio, video embedded directly in chat
+- [x] Flexible `model_params` — per-agent litellm params (temperature, top_p, seed, …); unsupported params silently dropped with warning
+- [x] Multimodal I/O — `accepted_inputs` per agent; vision input via Studio upload or API; `call_agent` attachments for explicit image handoff between agents; `/v1/files/upload` + `/v1/media/` endpoints
 
 **Coming**
 - [ ] Skill improvement injection (auto-apply corrections to future system prompts)

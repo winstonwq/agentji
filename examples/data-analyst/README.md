@@ -201,6 +201,29 @@ Format this text into a branded Word doc: ...
 
 ---
 
+## Model parameters
+
+Tune each agent's sampling independently in `agentji.yaml`:
+
+```yaml
+agents:
+  orchestrator:
+    model_params:
+      temperature: 0.3   # some creativity for planning
+  analyst:
+    model_params:
+      temperature: 0.0   # deterministic — SQL and numbers need precision
+      seed: 42
+  reporter:
+    model_params:
+      temperature: 0.7   # expressive for prose and document layout
+      max_tokens: 8000
+```
+
+Unsupported params are silently dropped by litellm — no config errors on models that don't support `seed` or `top_k`.
+
+---
+
 ## Switch any model — zero other changes
 
 ```yaml

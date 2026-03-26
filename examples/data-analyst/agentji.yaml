@@ -35,6 +35,26 @@ skills:
   - path: ./skills/data-analysis-1.0.2   # prompt skill — slug: data-analysis  (clawhub)
   - path: ./skills/docx-template         # prompt skill — name: docx-template    (local)
 
+# ── Model parameters (optional) ────────────────────────────────────────────────
+#
+#  Pass any litellm-compatible parameter to any agent.
+#  Unsupported params are silently dropped — agentji logs a warning listing them.
+#
+#  Example — tune each agent independently:
+#
+# agents:
+#   orchestrator:
+#     model_params:
+#       temperature: 0.3     # slightly creative for planning
+#   analyst:
+#     model_params:
+#       temperature: 0.0     # deterministic for SQL + numbers
+#       seed: 42
+#   reporter:
+#     model_params:
+#       temperature: 0.7     # creative for prose and layout decisions
+#       max_tokens: 8000
+
 # ── Agents ─────────────────────────────────────────────────────────────────────
 agents:
 
