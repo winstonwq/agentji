@@ -8,6 +8,7 @@ the path and reads the full content via the read_file built-in.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -41,6 +42,7 @@ class RunContext:
         self.size_threshold = size_threshold
         self._logger = logger
         self._store: dict[str, dict[str, Any]] = {}
+        self._lock = threading.Lock()
         scratch_dir.mkdir(parents=True, exist_ok=True)
 
     def set(self, key: str, value: str, agent: str) -> str:
@@ -65,12 +67,13 @@ class RunContext:
         else:
             stored = value
 
-        self._store[key] = {
-            "agent": agent,
-            "value": stored,
-            "offloaded": offloaded,
-            "size": size,
-        }
+        with self._lock:
+            self._store[key] = {
+                "agent": agent,
+                "value": stored,
+                "offloaded": offloaded,
+                "size": size,
+            }
 
         if self._logger:
             self._logger.context_write(
@@ -82,6 +85,39 @@ class RunContext:
             )
 
         return stored
+
+    def set_file(self, key: str, path: str, agent: str) -> str:
+        """Register a file path reference in the context (no size offloading).
+
+        Use this for binary outputs (images, audio, video) that are already
+        on disk. The path is stored as-is and returned to callers via get().
+
+        Args:
+            key: Logical key for this output.
+            path: Absolute or relative path to the file.
+            agent: Name of the agent producing this output.
+
+        Returns:
+            The path string.
+        """
+        with self._lock:
+            self._store[key] = {
+                "agent": agent,
+                "value": path,
+                "offloaded": True,
+                "size": 0,
+            }
+
+        if self._logger:
+            self._logger.context_write(
+                agent=agent,
+                key=key,
+                size=0,
+                offloaded=True,
+                path=path,
+            )
+
+        return path
 
     def get(self, key: str) -> str | None:
         """Return the stored value or path string for a key.

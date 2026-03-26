@@ -94,6 +94,16 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); font
 #send:disabled { opacity: .35; cursor: not-allowed; }
 #stop-btn { display: none; height: 32px; padding: 0 10px; background: #c0392b; border: none; border-radius: 6px; color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; align-items: center; gap: 4px; white-space: nowrap; flex-shrink: 0; }
 #stop-btn.visible { display: flex; }
+#attach-btn { width: 32px; height: 32px; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+#attach-btn:hover { border-color: var(--purple); color: var(--text); }
+#file-input { display: none; }
+.attachment-preview { display: flex; align-items: center; gap: 6px; padding: 4px 14px; flex-wrap: wrap; }
+.att-chip { display: flex; align-items: center; gap: 4px; background: var(--card); border: 1px solid var(--border); border-radius: 5px; padding: 2px 7px; font-size: 11px; color: var(--muted); }
+.att-chip img { width: 18px; height: 18px; object-fit: cover; border-radius: 2px; }
+.att-chip .att-remove { cursor: pointer; color: var(--dim); margin-left: 2px; }
+.att-chip .att-remove:hover { color: var(--red); }
+.msg-user-img { max-width: 260px; max-height: 200px; border-radius: 8px; display: block; margin-top: 6px; }
+.msg-resp-img { max-width: 400px; max-height: 320px; border-radius: 8px; display: block; margin-top: 4px; }
 
 /* ── Message types ───────────────────────────────────────────────────────── */
 .msg-user { align-self: flex-end; background: var(--card); border: 1px solid var(--border); border-radius: 12px 12px 3px 12px; padding: 9px 13px; max-width: 72%; white-space: pre-wrap; word-break: break-word; }
@@ -237,10 +247,13 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); font
       <button class="limit-btn continue" id="limit-continue">Continue →</button>
       <button class="limit-btn dismiss" id="limit-dismiss">Stop here</button>
     </div>
+    <div id="attachment-preview" class="attachment-preview"></div>
     <div id="input-row">
+      <input type="file" id="file-input" accept="image/*,audio/*,video/*" multiple>
+      <button id="attach-btn" title="Attach file">📎</button>
       <textarea id="prompt" rows="1" placeholder="Send a message…"></textarea>
-      <button id="stop-btn">■ Stop</button>
       <button id="send">↑</button>
+      <button id="stop-btn">■ Stop</button>
     </div>
   </main>
   <div class="drag-v" id="drag-right"></div>
@@ -270,6 +283,7 @@ const API = location.protocol === 'file:' ? 'http://localhost:8000' : location.o
 // ── State ─────────────────────────────────────────────────────────────────
 let pipeline         = null;
 let running          = false;
+let attachedFiles = []; // [{path, filename, objectUrl}]
 let improveEnabled   = false;   // tracks whether server has improvement enabled
 let sessionImprove   = false;   // current-session user toggle state
 let sessionStateful  = true;    // current-session stateful toggle state
@@ -1015,10 +1029,36 @@ async function sendMessage() {
   promptEl.style.height = '';
   setInput(false);
 
+  // Build user content — multimodal if attachments present
+  let userContent;
+  const currentAttachments = [...attachedFiles];
+  if (currentAttachments.length > 0) {
+    userContent = [{ type: 'text', text }];
+    for (const f of currentAttachments) {
+      userContent.push({ type: 'image_url', image_url: { url: API + '/v1/media/' + f.path } });
+    }
+  } else {
+    userContent = text;
+  }
+
+  // Clear attachments after building content
+  for (const f of currentAttachments) URL.revokeObjectURL(f.objectUrl);
+  attachedFiles = [];
+  renderAttachmentPreviews();
+
   // User bubble
   const uBubble = document.createElement('div');
   uBubble.className = 'msg-user';
   uBubble.textContent = text;
+  for (const f of currentAttachments) {
+    const isImg = /\.(png|jpe?g|webp|gif)$/i.test(f.filename);
+    if (isImg) {
+      const img = document.createElement('img');
+      img.src = f.objectUrl;
+      img.className = 'msg-user-img';
+      uBubble.appendChild(img);
+    }
+  }
   msgs.appendChild(uBubble);
 
   // Response card (always last in messages)
@@ -1027,8 +1067,7 @@ async function sendMessage() {
   msgs.appendChild(responseCard);
   msgs.scrollTop = msgs.scrollHeight;
 
-  // Build messages array: history + current user message
-  const messages = [...sessionHistory, { role: 'user', content: text }];
+  const messages = [...sessionHistory, { role: 'user', content: userContent }];
 
   let evtSrc = null;
   activeEvtSrc = null;
@@ -1110,11 +1149,18 @@ async function sendMessage() {
     }
 
     responseCard.classList.remove('cursor');
-    if (fullText) responseCard.innerHTML = md(fullText);
+    if (fullText) {
+      const imgMatch = fullText.trim().match(/^(\.agentji\/|runs\/|\/)[^\s"'<>]+\.(png|jpe?g|webp|gif)$/i);
+      if (imgMatch) {
+        responseCard.innerHTML = `<img src="${API}/v1/media/${encodeURIComponent(fullText.trim())}" class="msg-resp-img" alt="agent output">`;
+      } else {
+        responseCard.innerHTML = md(fullText);
+      }
+    }
 
     // Save this exchange to session history
     if (fullText) {
-      sessionHistory.push({ role: 'user', content: text });
+      sessionHistory.push({ role: 'user', content: userContent });
       sessionHistory.push({ role: 'assistant', content: fullText });
       updateSessionBadge();
     }
@@ -1169,6 +1215,57 @@ async function stopRun() {
 
   // Signal the backend to cancel (fire-and-forget)
   if (id) try { await fetch(API + '/v1/cancel/' + id, { method: 'POST' }); } catch {}
+}
+
+// ── File attachment ────────────────────────────────────────────────────────
+const attachBtn  = $('attach-btn');
+const fileInput  = $('file-input');
+const attachPrev = $('attachment-preview');
+
+attachBtn.addEventListener('click', () => fileInput.click());
+
+fileInput.addEventListener('change', async () => {
+  for (const file of fileInput.files) {
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await fetch(API + '/v1/files/upload', { method: 'POST', body: fd });
+      if (!res.ok) { console.error('upload failed', res.status); continue; }
+      const data = await res.json();
+      const objUrl = URL.createObjectURL(file);
+      attachedFiles.push({ path: data.path, filename: data.filename, objectUrl: objUrl });
+      renderAttachmentPreviews();
+    } catch (e) { console.error('upload error', e); }
+  }
+  fileInput.value = '';
+});
+
+function renderAttachmentPreviews() {
+  attachPrev.innerHTML = '';
+  for (let i = 0; i < attachedFiles.length; i++) {
+    const f = attachedFiles[i];
+    const chip = document.createElement('div');
+    chip.className = 'att-chip';
+    const isImg = /\.(png|jpe?g|webp|gif)$/i.test(f.filename);
+    if (isImg) {
+      const img = document.createElement('img');
+      img.src = f.objectUrl;
+      chip.appendChild(img);
+    }
+    const name = document.createElement('span');
+    name.textContent = f.filename;
+    chip.appendChild(name);
+    const rm = document.createElement('span');
+    rm.className = 'att-remove';
+    rm.textContent = '×';
+    rm.addEventListener('click', () => {
+      URL.revokeObjectURL(f.objectUrl);
+      attachedFiles.splice(i, 1);
+      renderAttachmentPreviews();
+    });
+    chip.appendChild(rm);
+    attachPrev.appendChild(chip);
+  }
 }
 
 // ── Event listeners ───────────────────────────────────────────────────────

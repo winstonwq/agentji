@@ -520,3 +520,111 @@ class TestOutputFormat:
         p = write_yaml(tmp_path, content)
         with pytest.raises(Exception):
             load_config(p)
+
+
+# ── model_params on AgentConfig ────────────────────────────────────────────────
+
+class TestModelParams:
+    def test_model_params_defaults_to_empty_dict(self, tmp_path: Path) -> None:
+        p = write_yaml(tmp_path, MINIMAL_CONFIG)
+        cfg = load_config(p)
+        assert cfg.agents["qa"].model_params == {}
+
+    def test_model_params_parsed_from_yaml(self, tmp_path: Path) -> None:
+        content = """
+            version: "1"
+            providers:
+              openai:
+                api_key: sk-test
+            agents:
+              writer:
+                model: openai/gpt-4o
+                system_prompt: You write.
+                model_params:
+                  temperature: 0.7
+                  top_p: 0.9
+                  max_tokens: 2000
+        """
+        p = write_yaml(tmp_path, content)
+        cfg = load_config(p)
+        assert cfg.agents["writer"].model_params["temperature"] == 0.7
+        assert cfg.agents["writer"].model_params["top_p"] == 0.9
+        assert cfg.agents["writer"].model_params["max_tokens"] == 2000
+
+    def test_model_params_accepts_arbitrary_keys(self, tmp_path: Path) -> None:
+        content = """
+            version: "1"
+            providers:
+              openai:
+                api_key: sk-test
+            agents:
+              qa:
+                model: openai/gpt-4o
+                system_prompt: You are helpful.
+                model_params:
+                  seed: 42
+                  presence_penalty: 0.1
+                  frequency_penalty: 0.2
+        """
+        p = write_yaml(tmp_path, content)
+        cfg = load_config(p)
+        assert cfg.agents["qa"].model_params["seed"] == 42
+        assert cfg.agents["qa"].model_params["presence_penalty"] == 0.1
+
+
+# ── accepted_inputs on AgentConfig ────────────────────────────────────────────
+
+class TestAcceptedInputs:
+    def test_accepted_inputs_defaults_to_text(self, tmp_path: Path) -> None:
+        p = write_yaml(tmp_path, MINIMAL_CONFIG)
+        cfg = load_config(p)
+        assert cfg.agents["qa"].accepted_inputs == ["text"]
+
+    def test_accepted_inputs_image(self, tmp_path: Path) -> None:
+        content = """
+            version: "1"
+            providers:
+              openai:
+                api_key: sk-test
+            agents:
+              vision:
+                model: openai/gpt-4o
+                system_prompt: You see images.
+                accepted_inputs: [text, image]
+        """
+        p = write_yaml(tmp_path, content)
+        cfg = load_config(p)
+        assert "image" in cfg.agents["vision"].accepted_inputs
+        assert "text" in cfg.agents["vision"].accepted_inputs
+
+    def test_accepted_inputs_all_modalities(self, tmp_path: Path) -> None:
+        content = """
+            version: "1"
+            providers:
+              openai:
+                api_key: sk-test
+            agents:
+              media:
+                model: openai/gpt-4o
+                system_prompt: You process all media.
+                accepted_inputs: [text, image, audio, video]
+        """
+        p = write_yaml(tmp_path, content)
+        cfg = load_config(p)
+        assert set(cfg.agents["media"].accepted_inputs) == {"text", "image", "audio", "video"}
+
+    def test_invalid_accepted_input_raises(self, tmp_path: Path) -> None:
+        content = """
+            version: "1"
+            providers:
+              openai:
+                api_key: sk-test
+            agents:
+              qa:
+                model: openai/gpt-4o
+                system_prompt: You are helpful.
+                accepted_inputs: [text, binary]
+        """
+        p = write_yaml(tmp_path, content)
+        with pytest.raises(Exception):
+            load_config(p)

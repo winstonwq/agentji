@@ -334,3 +334,153 @@ class TestDashScopeVisualizer:
 
         assert output_image.exists(), f"Expected image at {output_image}"
         assert output_image.stat().st_size > 1000
+
+
+# ── model_params: temperature + seed ──────────────────────────────────────────
+
+@pytest.mark.integration
+class TestModelParams:
+    def test_temperature_and_seed_do_not_break_completion(
+        self, tmp_path: Path, dashscope_api_key: str
+    ) -> None:
+        """model_params with temperature + seed are passed to litellm without error."""
+        config_path = _write_test_config(tmp_path, f"""
+            version: "1"
+            providers:
+              qwen:
+                api_key: {dashscope_api_key}
+                base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+            agents:
+              qa:
+                model: qwen/qwen-plus
+                system_prompt: "Be concise."
+                max_iterations: 1
+                model_params:
+                  temperature: 0.0
+                  seed: 42
+        """)
+        cfg = load_config(config_path)
+        result = run_agent(cfg, "qa", "Reply with exactly: PARAMS_OK")
+        assert result.strip(), "Expected non-empty response with model_params set"
+        assert isinstance(result, str)
+
+    def test_max_tokens_truncates_response(
+        self, tmp_path: Path, dashscope_api_key: str
+    ) -> None:
+        """max_tokens in model_params limits response length."""
+        config_path = _write_test_config(tmp_path, f"""
+            version: "1"
+            providers:
+              qwen:
+                api_key: {dashscope_api_key}
+                base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+            agents:
+              qa:
+                model: qwen/qwen-plus
+                system_prompt: "You are verbose. Always write at least 500 words."
+                max_iterations: 1
+                model_params:
+                  max_tokens: 20
+        """)
+        cfg = load_config(config_path)
+        result = run_agent(cfg, "qa", "Tell me everything about the universe.")
+        # With max_tokens=20 the response should be very short (< 200 chars)
+        assert len(result) < 300, f"Response too long for max_tokens=20: {len(result)} chars"
+
+
+# ── multimodal vision input ────────────────────────────────────────────────────
+
+def _make_red_png() -> bytes:
+    """Return a valid 32x32 red PNG using only stdlib (no PIL)."""
+    import struct, zlib
+
+    def chunk(ctype: bytes, data: bytes) -> bytes:
+        c = struct.pack(">I", len(data)) + ctype + data
+        return c + struct.pack(">I", zlib.crc32(ctype + data) & 0xFFFFFFFF)
+
+    signature = b"\x89PNG\r\n\x1a\n"
+    # 32x32 RGB image — large enough for all vision model constraints
+    ihdr_data = struct.pack(">IIBBBBB", 32, 32, 8, 2, 0, 0, 0)
+    ihdr = chunk(b"IHDR", ihdr_data)
+    # Raw image: filter byte (0) + 32 pixels of red (FF 00 00) per row × 32 rows
+    raw_rows = (b"\x00" + b"\xff\x00\x00" * 32) * 32
+    idat = chunk(b"IDAT", zlib.compress(raw_rows))
+    iend = chunk(b"IEND", b"")
+    return signature + ihdr + idat + iend
+
+
+@pytest.mark.integration
+class TestVisionMultimodal:
+    def test_vision_agent_describes_image(
+        self, tmp_path: Path, dashscope_api_key: str
+    ) -> None:
+        """Vision model receives a base64 image and returns a description."""
+        import base64
+
+        config_path = _write_test_config(tmp_path, f"""
+            version: "1"
+            providers:
+              qwen:
+                api_key: {dashscope_api_key}
+                base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+            agents:
+              vision:
+                model: qwen/qwen-vl-plus
+                system_prompt: "You are a vision model. Describe images concisely."
+                max_iterations: 1
+                accepted_inputs: [text, image]
+        """)
+        cfg = load_config(config_path)
+
+        png_bytes = _make_red_png()
+        b64 = base64.b64encode(png_bytes).decode()
+        multimodal_prompt = [
+            {"type": "text", "text": "What color is the dominant color in this image? Reply with the color name only."},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+        ]
+
+        result = run_agent(cfg, "vision", multimodal_prompt)
+        assert result.strip(), "Expected non-empty response from vision model"
+        # The model should mention red in its response
+        assert "red" in result.lower(), f"Expected 'red' in response, got: {result!r}"
+
+    def test_call_agent_passes_image_to_sub_agent(
+        self, tmp_path: Path, dashscope_api_key: str
+    ) -> None:
+        """Orchestrator passes an image file via call_agent attachments to a vision sub-agent."""
+        config_path = _write_test_config(tmp_path, f"""
+            version: "1"
+            providers:
+              qwen:
+                api_key: {dashscope_api_key}
+                base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+            agents:
+              orchestrator:
+                model: qwen/qwen-plus
+                system_prompt: >
+                  You are an orchestrator. When given an image file path,
+                  call the vision sub-agent with that path in attachments
+                  and report back what color the image is.
+                max_iterations: 3
+                agents: [vision]
+              vision:
+                model: qwen/qwen-vl-plus
+                system_prompt: >
+                  You are a vision expert. Describe the dominant color of any image
+                  you receive. Reply with the color name only.
+                max_iterations: 1
+                accepted_inputs: [text, image]
+        """)
+
+        # Write the test image to a local path
+        img_path = tmp_path / "red_square.png"
+        img_path.write_bytes(_make_red_png())
+
+        cfg = load_config(config_path)
+        result = run_agent(
+            cfg,
+            "orchestrator",
+            f"The image is at {img_path}. Use the vision agent with attachments to determine its color.",
+        )
+        assert result.strip(), "Expected non-empty orchestrator response"
+        assert "red" in result.lower(), f"Expected 'red' mentioned in final response, got: {result!r}"

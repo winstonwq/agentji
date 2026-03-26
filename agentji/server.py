@@ -23,7 +23,7 @@ from typing import Any
 _SESSION_IDLE_SECS = 30  # seconds of inactivity before auto-triggering extraction
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, File, HTTPException, Request, UploadFile
     from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
     import uvicorn
 except ImportError:
@@ -86,7 +86,7 @@ app = FastAPI(
 
 class ChatMessage(BaseModel):
     role: str
-    content: str
+    content: str | list[dict]
 
 
 class ChatCompletionRequest(BaseModel):
@@ -494,6 +494,7 @@ async def pipeline_topology() -> dict:
             "builtins": list(agent.builtins),
             "sub_agents": list(agent.agents),
             "output_format": getattr(agent, "output_format", "text"),
+            "accepted_inputs": getattr(agent, "accepted_inputs", ["text"]),
             "inputs": [{"key": i.key, "description": i.description} for i in agent.inputs],
             "outputs": [{"key": o.key, "description": o.description} for o in agent.outputs],
         }
@@ -556,6 +557,25 @@ async def end_session(session_id: str) -> dict:
     return {"session_id": session_id, "status": "ended"}
 
 
+# ── POST /v1/files/upload — accept file uploads for multimodal input ─────────
+
+@app.post("/v1/files/upload")
+async def upload_file(file: UploadFile) -> dict:
+    """Upload a file (image, audio, etc.) and receive a local path reference.
+
+    The returned path can be included in a multimodal ChatMessage content list
+    as an image_url content block, or passed as a call_agent attachment.
+    """
+    upload_dir = Path(".agentji/uploads")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(file.filename or "upload").suffix or ".bin"
+    fname = f"{uuid.uuid4().hex[:8]}{suffix}"
+    dest = upload_dir / fname
+    content = await file.read()
+    dest.write_bytes(content)
+    return {"path": str(dest), "filename": fname}
+
+
 # ── GET /v1/files/{filepath} — serve local files as downloads ────────────────
 
 @app.get("/v1/files/{filepath:path}")
@@ -578,6 +598,26 @@ async def download_file(filepath: str):
         filename=target.name,
         headers={"Content-Disposition": f'attachment; filename="{target.name}"'},
     )
+
+
+# ── GET /v1/media/{filepath} — serve files inline for Studio rendering ────────
+
+@app.get("/v1/media/{filepath:path}")
+async def serve_media(filepath: str):
+    """Serve a local file inline (for image rendering in Studio). Path is relative to CWD."""
+    import mimetypes as _mimetypes
+    cwd = Path.cwd()
+    target = (cwd / filepath).resolve()
+    try:
+        target.relative_to(cwd)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {filepath}")
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="Not a file")
+    media_type, _ = _mimetypes.guess_type(str(target))
+    return FileResponse(path=str(target), media_type=media_type or "application/octet-stream")
 
 
 # ── Server launcher (used by CLI) ─────────────────────────────────────────────

@@ -450,3 +450,107 @@ def test_files_endpoint_blocks_path_traversal(tmp_path):
         assert resp.status_code in (403, 404)
     finally:
         os.chdir(original_cwd)
+
+
+# ── accepted_inputs in pipeline topology ──────────────────────────────────────
+
+def test_pipeline_includes_accepted_inputs():
+    """GET /v1/pipeline returns accepted_inputs for each agent."""
+    client = TestClient(app)
+    resp = client.get("/v1/pipeline")
+    assert resp.status_code == 200
+    data = resp.json()
+    agent_info = data["agents"]["assistant"]
+    assert "accepted_inputs" in agent_info
+    assert "text" in agent_info["accepted_inputs"]
+
+
+# ── multimodal ChatMessage content ────────────────────────────────────────────
+
+def test_chat_completion_accepts_multimodal_content():
+    """POST /v1/chat/completions accepts list content (multimodal) in messages."""
+    with patch("agentji.loop.run_agent", return_value="I see an image") as mock_run:
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is in this image?"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                    ],
+                }],
+                "stream": False,
+            },
+        )
+    assert resp.status_code == 200
+    # run_agent should have been called with the multimodal list
+    called_prompt = mock_run.call_args.args[2] if mock_run.call_args.args else mock_run.call_args.kwargs.get("prompt")
+    assert isinstance(called_prompt, list)
+    assert called_prompt[0]["type"] == "text"
+    assert called_prompt[1]["type"] == "image_url"
+
+
+# ── POST /v1/files/upload ─────────────────────────────────────────────────────
+
+def test_upload_file_returns_path_and_filename(tmp_path, monkeypatch):
+    """POST /v1/files/upload saves the file and returns path + filename."""
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/files/upload",
+        files={"file": ("test.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "path" in data
+    assert "filename" in data
+    assert data["filename"].endswith(".png")
+    # File should actually exist
+    from pathlib import Path as _Path
+    assert _Path(data["path"]).exists()
+
+
+def test_upload_file_saves_content(tmp_path, monkeypatch):
+    """Uploaded file content is written to disk correctly."""
+    monkeypatch.chdir(tmp_path)
+    content = b"\x89PNG\r\n\x1a\nFAKE_PNG_DATA"
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/files/upload",
+        files={"file": ("image.png", content, "image/png")},
+    )
+    assert resp.status_code == 200
+    from pathlib import Path as _Path
+    saved = _Path(resp.json()["path"]).read_bytes()
+    assert saved == content
+
+
+# ── GET /v1/media/{filepath} ──────────────────────────────────────────────────
+
+def test_media_endpoint_serves_file_inline(tmp_path, monkeypatch):
+    """GET /v1/media/{path} serves the file inline (no attachment disposition)."""
+    monkeypatch.chdir(tmp_path)
+    img = tmp_path / "photo.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    client = TestClient(app)
+    resp = client.get(f"/v1/media/photo.png")
+    assert resp.status_code == 200
+    assert "attachment" not in resp.headers.get("content-disposition", "")
+
+
+def test_media_endpoint_404_on_missing_file(tmp_path, monkeypatch):
+    """GET /v1/media/nonexistent returns 404."""
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(app)
+    resp = client.get("/v1/media/does_not_exist.png")
+    assert resp.status_code == 404
+
+
+def test_media_endpoint_403_on_path_traversal(tmp_path, monkeypatch):
+    """GET /v1/media/../../etc/passwd returns 403."""
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(app)
+    resp = client.get("/v1/media/../../etc/passwd")
+    assert resp.status_code in (403, 404)

@@ -263,7 +263,8 @@ def _summarize_log(log_path: Path, max_tool_preview: int, session_filter: str | 
     lines.append("")
     if session_filter:
         lines.append(f"**Session**: `{session_filter}`  ")
-    lines.append(f"**Pipelines**: {len(pipelines_seen)}  ")
+    pipeline_ids = ", ".join(f"`{p}`" for p in pipelines_seen)
+    lines.append(f"**Pipelines**: {len(pipelines_seen)} ({pipeline_ids})  ")
     lines.append(f"**Agent runs**: {len(run_starts)}  ")
     if errors:
         lines.append(f"**Errors**: {len(errors)}")

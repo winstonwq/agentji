@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 from agentji.config import AgentjiConfig, AgentConfig, ProviderConfig
+
+_log = logging.getLogger(__name__)
 
 
 # ── Persistent endpoint cache ─────────────────────────────────────────────────
@@ -160,5 +163,15 @@ def build_litellm_kwargs(
             raise ValueError(
                 f"Cannot read vertex_credentials_file '{creds_path}': {exc}"
             ) from exc
+
+    # ── User-defined model params (temperature, top_p, etc.) ─────────────────
+    if agent.model_params:
+        kwargs.update(agent.model_params)
+        kwargs["drop_params"] = True
+        _log.warning(
+            "Agent '%s' model_params: %s — unsupported params will be silently dropped by litellm.",
+            agent_name,
+            list(agent.model_params.keys()),
+        )
 
     return kwargs

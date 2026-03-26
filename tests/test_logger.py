@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -190,3 +191,31 @@ class TestLogSummaryCli:
     def test_missing_log_file_raises(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
             _summarize_log(tmp_path / "nonexistent.jsonl", 200)
+
+
+# ── Thread safety ─────────────────────────────────────────────────────────────
+
+def test_concurrent_writes_are_thread_safe(tmp_path: Path) -> None:
+    """Multiple threads writing to the same logger must not corrupt the JSONL."""
+    log = ConversationLogger(tmp_path / "concurrent.jsonl")
+    errors: list[Exception] = []
+
+    def worker(i: int) -> None:
+        try:
+            log.run_start(agent=f"agent-{i}", run_id=f"r{i}", model="openai/gpt-4o", prompt="hi")
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(30)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"Thread errors: {errors}"
+    lines = (tmp_path / "concurrent.jsonl").read_text().splitlines()
+    assert len(lines) == 30
+    # Every line must be valid JSON
+    for line in lines:
+        entry = json.loads(line)
+        assert entry["event"] == "run_start"

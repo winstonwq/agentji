@@ -12,6 +12,7 @@ Supports daily log rotation for long-running serve deployments.
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,6 +94,7 @@ class ConversationLogger:
         self.pipeline_id: str = pipeline_id or uuid.uuid4().hex[:8]
         self.event_callback = event_callback
         self.session_id: str | None = session_id
+        self._lock = threading.Lock()
 
     @property
     def log_path(self) -> Path:
@@ -105,7 +107,7 @@ class ConversationLogger:
     # ── Core write ────────────────────────────────────────────────────────────
 
     def _write(self, event: str, **fields: Any) -> None:
-        """Append one JSON event line to the log file."""
+        """Append one JSON event line to the log file. Thread-safe."""
         entry: dict[str, Any] = {
             "ts": _now(),
             "pipeline": self.pipeline_id,
@@ -116,8 +118,9 @@ class ConversationLogger:
             entry["session"] = self.session_id
         path = self.log_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+        with self._lock:
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
         if self.event_callback:
             self.event_callback(entry)
 

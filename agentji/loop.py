@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, TypedDict
 
@@ -64,6 +65,10 @@ class AgentState(TypedDict):
     _cancel_fn: Any  # Callable[[], bool] | None
     # Consecutive error tracking — reset on any successful tool call iteration
     _consecutive_errors: int
+    # Memory backend — handles sliding window compression each iteration
+    _memory: Any  # MemoryBackend | None
+    # Whether to fan out multiple call_agent calls concurrently
+    _parallel_agents: bool
 
 
 # ── call_agent tool ───────────────────────────────────────────────────────────
@@ -81,7 +86,9 @@ def _build_call_agent_tool(agent_names: list[str]) -> dict[str, Any]:
             "description": (
                 "Delegate a task to a specialized sub-agent and receive its full response. "
                 "Use this to break complex tasks into focused steps handled by the right expert. "
-                f"Available agents: {', '.join(agent_names)}."
+                f"Available agents: {', '.join(agent_names)}. "
+                "When tasks are independent — they don't need each other's outputs — "
+                "include multiple call_agent calls in a single response to dispatch them in parallel."
             ),
             "parameters": {
                 "type": "object",
@@ -96,6 +103,15 @@ def _build_call_agent_tool(agent_names: list[str]) -> dict[str, Any]:
                         "description": (
                             "The task or question to send to the agent. "
                             "Be specific — include all context the agent needs since it has no memory of prior calls."
+                        ),
+                    },
+                    "attachments": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional list of local file paths to include as image inputs for the sub-agent. "
+                            "Only valid when the target agent has 'image' in its accepted_inputs. "
+                            "Paths should be in the run scratch directory."
                         ),
                     },
                 },
@@ -153,6 +169,13 @@ def _call_llm(state: AgentState) -> AgentState:
                 result=f"Stuck after {consecutive} consecutive errors — intervention injected",
                 error=False,
             )
+
+    # ── Sliding window compression ─────────────────────────────────────────
+    memory = state.get("_memory")
+    if memory is not None:
+        state["messages"] = memory.maybe_compress(
+            state["messages"], state["litellm_kwargs"]
+        )
 
     kwargs: dict[str, Any] = {
         **state["litellm_kwargs"],
@@ -324,43 +347,144 @@ def _try_skill_conversion(
         return (f"Error executing converted skill '{tool_name}': {exc}", True)
 
 
+def _build_image_content_block(path: str) -> dict[str, Any]:
+    """Convert a local image file path to a litellm-compatible image_url content block."""
+    import base64
+    import mimetypes
+    data = Path(path).read_bytes()
+    mime, _ = mimetypes.guess_type(path)
+    mime = mime or "image/png"
+    b64 = base64.b64encode(data).decode()
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+
+
+def _dispatch_call_agent(
+    state: AgentState,
+    args: dict[str, Any],
+    agent_name: str,
+    run_id: str,
+    logger: "ConversationLogger | None",
+) -> tuple[str, bool]:
+    """Execute a single call_agent invocation. Returns (result, is_error).
+
+    Safe to call from multiple threads simultaneously — all shared state
+    (RunContext, ConversationLogger) is protected by locks.
+    """
+    target = args.get("agent", "")
+    sub_prompt = args.get("prompt", "")
+    attachments: list[str] = args.get("attachments") or []
+    cfg = state.get("_cfg")
+    allowed_agents: list[str] = state.get("_allowed_agents") or []
+    run_context = state.get("_run_context")
+
+    if not cfg:
+        return "Error: call_agent not available (no config in state)", True
+    if target not in allowed_agents:
+        return (
+            f"Error: agent '{target}' is not in the allowed sub-agents list. "
+            f"Allowed: {allowed_agents}",
+            True,
+        )
+
+    target_cfg = cfg.agents.get(target)
+    if run_context and target_cfg and target_cfg.inputs:
+        found_lines = []
+        for inp in target_cfg.inputs:
+            value = run_context.get(inp.key)
+            if value is None:
+                continue
+            found_lines.append(f"- {inp.key}: {value}")
+            if logger:
+                summary_entry = run_context.summary().get(inp.key, {})
+                logger.context_read(
+                    agent=target,
+                    key=inp.key,
+                    offloaded=summary_entry.get("offloaded", False),
+                    path=value if summary_entry.get("offloaded") else None,
+                )
+        if found_lines:
+            input_lines = (
+                ["The following inputs are available for this task:"]
+                + found_lines
+                + ["\nRead each file using read_file before beginning your work."]
+            )
+            sub_prompt = "\n".join(input_lines) + "\n\n" + sub_prompt
+
+    # ── Build multimodal user content if attachments present ──────────────
+    sub_content: str | list[dict[str, Any]] = sub_prompt
+    if attachments:
+        parts: list[dict[str, Any]] = [{"type": "text", "text": sub_prompt}]
+        for att in attachments:
+            try:
+                parts.append(_build_image_content_block(att))
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "call_agent: could not encode attachment '%s': %s", att, exc
+                )
+        sub_content = parts
+
+    result = run_agent(
+        cfg,
+        target,
+        sub_content,
+        logger=logger,
+        run_id=f"{run_id}:{target}",
+        run_context=run_context,
+    )
+
+    if run_context and target_cfg and target_cfg.outputs:
+        for output in target_cfg.outputs:
+            run_context.set(output.key, result, target)
+
+    return result, False
+
+
 def _execute_tools(state: AgentState) -> AgentState:
-    """Execute all tool calls in the last assistant message."""
+    """Execute all tool calls in the last assistant message.
+
+    Non-call_agent tools (skills, MCP, builtins) run sequentially.
+    call_agent invocations run concurrently when parallel_agents=True and
+    the LLM emitted ≥2 call_agent calls in the same response.
+    Results are always appended to state["messages"] in original tool-call order.
+    """
     from agentji.mcp_bridge import call_mcp_tool
     from agentji.builtins import execute_builtin, VALID_BUILTINS
 
     logger: ConversationLogger | None = state.get("_logger")
     agent_name: str = state.get("_agent_name", "")
     run_id: str = state.get("_run_id", "")
-    run_context: RunContext | None = state.get("_run_context")
-
-    last_message = state["messages"][-1]
-    tool_calls = last_message.get("tool_calls") or []
-
+    allow_parallel: bool = state.get("_parallel_agents", True)
+    allowed_agents: list[str] = state.get("_allowed_agents") or []
     builtin_set = set(state.get("builtin_set") or [])
 
-    for tool_call in tool_calls:
+    last_message = state["messages"][-1]
+    tool_calls: list[dict[str, Any]] = last_message.get("tool_calls") or []
+
+    # results[i] = (tool_call_id, content, is_error)
+    results: dict[int, tuple[str, str, bool]] = {}
+
+    # ── Partition into call_agent vs everything else ───────────────────────────
+    ca_indices = [i for i, tc in enumerate(tool_calls) if tc["function"]["name"] == "call_agent"]
+    other_indices = [i for i, tc in enumerate(tool_calls) if tc["function"]["name"] != "call_agent"]
+
+    # ── Execute non-call_agent tools sequentially (unchanged behavior) ─────────
+    for i in other_indices:
+        tool_call = tool_calls[i]
         fn = tool_call["function"]
         name: str = fn["name"]
+        tool_id = tool_call.get("id", name)
+
         try:
             args: dict[str, Any] = json.loads(fn.get("arguments", "{}"))
         except json.JSONDecodeError as exc:
-            tool_id = tool_call.get("id", name)
-            err_msg = f"Error: tool arguments contained invalid JSON ({exc}). Rewrite the tool call with properly escaped arguments."
+            err = f"Error: tool arguments contained invalid JSON ({exc}). Rewrite the tool call with properly escaped arguments."
             if logger:
-                logger.tool_result(agent=agent_name, run_id=run_id, tool_name=name, result=err_msg, error=True)
-            state["messages"].append({
-                "role": "tool",
-                "tool_call_id": tool_id,
-                "content": err_msg,
-            })
+                logger.tool_result(agent=agent_name, run_id=run_id, tool_name=name, result=err, error=True)
+            results[i] = (tool_id, err, True)
             continue
 
-        allowed_agents: list[str] = state.get("_allowed_agents") or []
-
-        if name == "call_agent":
-            tool_type = "agent"
-        elif name in state["mcp_map"]:
+        if name in state["mcp_map"]:
             tool_type = "mcp"
         elif name in builtin_set:
             tool_type = "builtin"
@@ -368,116 +492,81 @@ def _execute_tools(state: AgentState) -> AgentState:
             tool_type = "skill"
 
         if logger:
-            logger.tool_call(
-                agent=agent_name,
-                run_id=run_id,
-                tool_name=name,
-                tool_type=tool_type,
-                args=args,
-            )
+            logger.tool_call(agent=agent_name, run_id=run_id, tool_name=name, tool_type=tool_type, args=args)
 
         error = False
         try:
-            if name == "call_agent":
-                target = args.get("agent", "")
-                sub_prompt = args.get("prompt", "")
-                cfg = state.get("_cfg")
-                if not cfg:
-                    result = "Error: call_agent not available (no config in state)"
-                    error = True
-                elif target not in allowed_agents:
-                    result = (
-                        f"Error: agent '{target}' is not in the allowed sub-agents list. "
-                        f"Allowed: {allowed_agents}"
-                    )
-                    error = True
-                else:
-                    # ── Resolve inputs for target agent ───────────────────
-                    target_cfg = cfg.agents.get(target)
-                    if run_context and target_cfg and target_cfg.inputs:
-                        found_lines = []
-                        for inp in target_cfg.inputs:
-                            value = run_context.get(inp.key)
-                            if value is None:
-                                # Input not available (e.g. reporter called directly
-                                # without analyst) — skip silently; the orchestrator's
-                                # prompt contains the necessary instructions instead.
-                                continue
-                            found_lines.append(f"- {inp.key}: {value}")
-                            if logger:
-                                summary_entry = run_context.summary().get(inp.key, {})
-                                logger.context_read(
-                                    agent=target,
-                                    key=inp.key,
-                                    offloaded=summary_entry.get("offloaded", False),
-                                    path=value if summary_entry.get("offloaded") else None,
-                                )
-                        if found_lines:
-                            input_lines = (
-                                ["The following inputs are available for this task:"]
-                                + found_lines
-                                + ["\nRead each file using read_file before beginning your work."]
-                            )
-                            sub_prompt = "\n".join(input_lines) + "\n\n" + sub_prompt
-
-                    result = run_agent(
-                        cfg,
-                        target,
-                        sub_prompt,
-                        logger=logger,
-                        run_id=f"{run_id}:{target}",
-                        run_context=run_context,
-                    )
-
-                    # ── Store declared outputs from target agent ───────────
-                    if run_context and target_cfg and target_cfg.outputs:
-                        for output in target_cfg.outputs:
-                            run_context.set(output.key, result, target)
-
-            elif name in state["mcp_map"]:
+            if name in state["mcp_map"]:
                 mcp_config = state["mcp_map"][name]
                 result = call_mcp_tool(mcp_config, name, args)
             elif name in state["tool_map"]:
                 tool_schema = state["tool_map"][name]
-                # skill.yaml timeout wins; fall back to agent's tool_timeout
                 skill_timeout = tool_schema.get("_timeout")
                 agent_timeout = state.get("_tool_timeout", 60)
                 result = execute_skill(tool_schema, args, timeout=skill_timeout or agent_timeout)
             elif name in builtin_set and name in VALID_BUILTINS:
                 result = execute_builtin(name, args, default_timeout=state.get("_tool_timeout", 60))
             else:
-                # ── skill-converter: try to generate skill.yaml on the fly ──
                 conv_result = _try_skill_conversion(state, name, args)
                 if conv_result is not None:
                     result, error = conv_result
                 else:
-                    available = (
-                        ["call_agent"] if allowed_agents else []
-                    ) + list(state["tool_map"]) + list(state["mcp_map"]) + list(builtin_set)
-                    result = (
-                        f"Error: unknown tool '{name}'. "
-                        f"Available: {available}"
-                    )
+                    available = list(state["tool_map"]) + list(state["mcp_map"]) + list(builtin_set)
+                    result = f"Error: unknown tool '{name}'. Available: {available}"
                     error = True
         except Exception as exc:
             result = f"Error executing '{name}': {exc}"
             error = True
 
         if logger:
-            logger.tool_result(
-                agent=agent_name,
-                run_id=run_id,
-                tool_name=name,
-                result=result,
-                error=error,
-            )
+            logger.tool_result(agent=agent_name, run_id=run_id, tool_name=name, result=result, error=error)
+        results[i] = (tool_id, result, error)
 
+    # ── Execute call_agent tools — parallel when ≥2 and allowed ───────────────
+    use_parallel = allow_parallel and len(ca_indices) > 1
+
+    def _run_call_agent(i: int) -> tuple[int, str, str, bool]:
+        tool_call = tool_calls[i]
+        fn = tool_call["function"]
+        tool_id = tool_call.get("id", "call_agent")
+        try:
+            args = json.loads(fn.get("arguments", "{}"))
+        except json.JSONDecodeError as exc:
+            err = f"Error: invalid JSON arguments ({exc})."
+            if logger:
+                logger.tool_result(agent=agent_name, run_id=run_id, tool_name="call_agent", result=err, error=True)
+            return i, tool_id, err, True
+
+        if logger:
+            logger.tool_call(agent=agent_name, run_id=run_id, tool_name="call_agent", tool_type="agent", args=args)
+        try:
+            result, error = _dispatch_call_agent(state, args, agent_name, run_id, logger)
+        except Exception as exc:
+            result, error = f"Error executing call_agent: {exc}", True
+
+        if logger:
+            logger.tool_result(agent=agent_name, run_id=run_id, tool_name="call_agent", result=result, error=error)
+        return i, tool_id, result, error
+
+    if use_parallel:
+        with ThreadPoolExecutor(max_workers=len(ca_indices)) as ex:
+            for i, tool_id, result, error in ex.map(_run_call_agent, ca_indices):
+                results[i] = (tool_id, result, error)
+    else:
+        for i in ca_indices:
+            i, tool_id, result, error = _run_call_agent(i)
+            results[i] = (tool_id, result, error)
+
+    # ── Append results in original order; track consecutive errors ────────────
+    for i in range(len(tool_calls)):
+        if i not in results:
+            continue
+        tool_id, content, error = results[i]
         state["messages"].append({
             "role": "tool",
-            "tool_call_id": tool_call["id"],
-            "content": result,
+            "tool_call_id": tool_id,
+            "content": content,
         })
-
         if error:
             state["_consecutive_errors"] = state.get("_consecutive_errors", 0) + 1
         else:
@@ -576,7 +665,7 @@ def _get_graph() -> Any:
 def run_agent(
     cfg: AgentjiConfig,
     agent_name: str,
-    prompt: str,
+    prompt: str | list[dict[str, Any]],
     logger: ConversationLogger | None = None,
     run_id: str | None = None,
     run_context: RunContext | None = None,
@@ -624,7 +713,7 @@ def run_agent(
             agent=agent_name,
             run_id=run_id,
             model=model_str,
-            prompt=prompt,
+            prompt=prompt if isinstance(prompt, str) else f"[multimodal: {len(prompt)} parts]",
         )
 
     # ── Load skills (tool + prompt) ────────────────────────────────────────
@@ -741,6 +830,8 @@ def run_agent(
         "_consecutive_errors": 0,
         "_tool_timeout": agent.tool_timeout,
         "_cancel_fn": cancel_fn,
+        "_memory": memory,
+        "_parallel_agents": agent.parallel_agents,
     }
 
     graph = _get_graph()
@@ -749,7 +840,7 @@ def run_agent(
 
     # ── Memory remember (root/orchestrator only) ───────────────────────────
     if is_root:
-        memory.remember(run_id, final_response)
+        memory.remember(run_id, final_response, litellm_kwargs)
 
     return final_response
 
@@ -757,7 +848,7 @@ def run_agent(
 def run_agent_streaming(
     cfg: AgentjiConfig,
     agent_name: str,
-    prompt: str,
+    prompt: str | list[dict[str, Any]],
     on_token: Callable[[str], None],
     logger: ConversationLogger | None = None,
     run_id: str | None = None,
@@ -803,7 +894,12 @@ def run_agent_streaming(
     model_str = litellm_kwargs.get("model", agent.model)
 
     if logger:
-        logger.run_start(agent=agent_name, run_id=run_id, model=model_str, prompt=prompt)
+        logger.run_start(
+            agent=agent_name,
+            run_id=run_id,
+            model=model_str,
+            prompt=prompt if isinstance(prompt, str) else f"[multimodal: {len(prompt)} parts]",
+        )
 
     skill_paths = [s.path for s in cfg.skills]
     all_skill_descriptors = translate_skills(skill_paths) if skill_paths else []
@@ -910,6 +1006,8 @@ def run_agent_streaming(
         "_consecutive_errors": 0,
         "_tool_timeout": agent.tool_timeout,
         "_cancel_fn": cancel_fn,
+        "_memory": memory,
+        "_parallel_agents": agent.parallel_agents,
     }
 
     graph = _get_graph()
@@ -917,6 +1015,6 @@ def run_agent_streaming(
     final_response = final_state["final_response"]
 
     if is_root:
-        memory.remember(run_id, final_response)
+        memory.remember(run_id, final_response, litellm_kwargs)
 
     return final_response

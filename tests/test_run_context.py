@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -103,3 +104,69 @@ def test_logger_context_write_called(tmp_path: Path) -> None:
     assert call_kwargs["offloaded"] is True
     assert call_kwargs["path"] is not None
     assert call_kwargs["path"].endswith("big.md")
+
+
+def test_concurrent_set_is_thread_safe(tmp_path: Path) -> None:
+    """Concurrent set() from multiple threads must not corrupt the store."""
+    ctx = make_ctx(tmp_path)
+    errors: list[Exception] = []
+
+    def worker(i: int) -> None:
+        try:
+            ctx.set(f"key_{i}", f"value_{i}", agent="agent")
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(30)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"Thread errors: {errors}"
+    assert len(ctx._store) == 30
+    for i in range(30):
+        assert ctx.get(f"key_{i}") == f"value_{i}"
+
+
+# ── set_file ───────────────────────────────────────────────────────────────────
+
+def test_set_file_stores_path_as_is(tmp_path: Path) -> None:
+    ctx = make_ctx(tmp_path)
+    img = tmp_path / "output.png"
+    img.write_bytes(b"\x89PNG")
+    result = ctx.set_file("portrait", str(img), agent="painter")
+    assert result == str(img)
+    assert ctx.get("portrait") == str(img)
+
+
+def test_set_file_marked_as_offloaded(tmp_path: Path) -> None:
+    ctx = make_ctx(tmp_path)
+    img = tmp_path / "out.png"
+    img.write_bytes(b"\x89PNG")
+    ctx.set_file("img", str(img), agent="painter")
+    summary = ctx.summary()
+    assert summary["img"]["offloaded"] is True
+    assert summary["img"]["agent"] == "painter"
+    assert summary["img"]["size"] == 0
+
+
+def test_set_file_calls_logger(tmp_path: Path) -> None:
+    logger = MagicMock()
+    ctx = make_ctx(tmp_path, logger=logger)
+    img = tmp_path / "result.png"
+    img.write_bytes(b"\x89PNG")
+    ctx.set_file("output", str(img), agent="imager")
+    logger.context_write.assert_called_once()
+    kwargs = logger.context_write.call_args.kwargs
+    assert kwargs["key"] == "output"
+    assert kwargs["offloaded"] is True
+    assert kwargs["path"] == str(img)
+
+
+def test_set_file_retrievable_after_set(tmp_path: Path) -> None:
+    ctx = make_ctx(tmp_path)
+    img = tmp_path / "x.jpg"
+    img.write_bytes(b"JFIF")
+    ctx.set_file("thumb", str(img), agent="gen")
+    assert ctx.get("thumb") == str(img)

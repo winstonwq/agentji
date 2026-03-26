@@ -304,3 +304,51 @@ class TestVertexAICredentials:
         kwargs = build_litellm_kwargs(cfg, "assistant")
         assert kwargs["api_key"] == "sk-live"
         assert "vertex_credentials" not in kwargs
+
+
+# ── model_params merged into litellm kwargs ────────────────────────────────────
+
+class TestModelParamsInKwargs:
+    def _make_cfg(self, model_params: dict) -> "AgentjiConfig":
+        from agentji.config import AgentjiConfig
+        return AgentjiConfig.model_validate({
+            "version": "1",
+            "providers": {"openai": {"api_key": "sk-test"}},
+            "agents": {
+                "assistant": {
+                    "model": "openai/gpt-4o",
+                    "system_prompt": "Be helpful.",
+                    "model_params": model_params,
+                }
+            },
+        })
+
+    def test_temperature_included_in_kwargs(self) -> None:
+        cfg = self._make_cfg({"temperature": 0.7})
+        kwargs = build_litellm_kwargs(cfg, "assistant")
+        assert kwargs["temperature"] == 0.7
+
+    def test_multiple_params_all_included(self) -> None:
+        cfg = self._make_cfg({"temperature": 0.5, "top_p": 0.9, "max_tokens": 1000})
+        kwargs = build_litellm_kwargs(cfg, "assistant")
+        assert kwargs["temperature"] == 0.5
+        assert kwargs["top_p"] == 0.9
+        assert kwargs["max_tokens"] == 1000
+
+    def test_drop_params_set_when_model_params_present(self) -> None:
+        cfg = self._make_cfg({"temperature": 0.3})
+        kwargs = build_litellm_kwargs(cfg, "assistant")
+        assert kwargs.get("drop_params") is True
+
+    def test_drop_params_absent_when_no_model_params(self) -> None:
+        cfg = self._make_cfg({})
+        kwargs = build_litellm_kwargs(cfg, "assistant")
+        assert "drop_params" not in kwargs
+
+    def test_model_params_warning_logged(self, caplog) -> None:
+        import logging
+        cfg = self._make_cfg({"temperature": 0.8, "seed": 42})
+        with caplog.at_level(logging.WARNING, logger="agentji.router"):
+            build_litellm_kwargs(cfg, "assistant")
+        assert any("model_params" in r.message for r in caplog.records)
+        assert any("temperature" in r.message or "seed" in r.message for r in caplog.records)

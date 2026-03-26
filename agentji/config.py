@@ -230,6 +230,26 @@ class AgentConfig(BaseModel):
             "the orchestrator receives the path as a string."
         ),
     )
+    model_params: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Arbitrary litellm-compatible parameters passed directly to litellm.completion(). "
+            "Supported keys depend on the model — common ones: temperature, top_p, max_tokens, "
+            "presence_penalty, frequency_penalty, seed. "
+            "Parameters unsupported by the model are silently dropped by litellm (drop_params=True). "
+            "A warning is logged listing what was passed so you can verify intent."
+        ),
+    )
+    accepted_inputs: list[Literal["text", "image", "audio", "video"]] = Field(
+        default_factory=lambda: ["text"],
+        description=(
+            "Input modalities this agent accepts. "
+            "'text' (always included) — plain text prompts. "
+            "'image' — the agent accepts image file paths or base64-encoded images as input. "
+            "Used to validate call_agent attachment routing and inform Studio UI. "
+            "For vision models, add 'image' here."
+        ),
+    )
     outputs: list[AgentOutput] = Field(
         default_factory=list,
         description="Named outputs this agent writes to the run context at completion.",

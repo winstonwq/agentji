@@ -385,3 +385,316 @@ class TestRunAgentPaths:
         lines = (tmp_path / "log.jsonl").read_text().splitlines()
         events = [json.loads(l) for l in lines]
         assert all(e["run_id"] == "my-run-id" for e in events)
+
+
+# ── Parallel call_agent dispatch ──────────────────────────────────────────────
+
+class TestParallelCallAgent:
+    """Tests for concurrent call_agent fan-out in _execute_tools."""
+
+    def _two_call_agent_state(self, parallel: bool = True) -> AgentState:
+        """State with two call_agent tool calls in the last assistant message."""
+        agent_cfg = MagicMock()
+        agent_cfg.inputs = []
+        agent_cfg.outputs = []
+        cfg = MagicMock()
+        cfg.agents = {"a1": agent_cfg, "a2": agent_cfg}
+
+        tool_calls = [
+            {"id": "t1", "function": {"name": "call_agent",
+             "arguments": json.dumps({"agent": "a1", "prompt": "do A"})}},
+            {"id": "t2", "function": {"name": "call_agent",
+             "arguments": json.dumps({"agent": "a2", "prompt": "do B"})}},
+        ]
+        return _base_state(
+            messages=[
+                {"role": "user", "content": "go"},
+                {"role": "assistant", "content": None, "tool_calls": tool_calls},
+            ],
+            _cfg=cfg,
+            _allowed_agents=["a1", "a2"],
+            _parallel_agents=parallel,
+        )
+
+    def test_both_agents_execute(self) -> None:
+        state = self._two_call_agent_state(parallel=True)
+        with patch("agentji.loop._dispatch_call_agent", return_value=("ok", False)) as mock_d:
+            _execute_tools(state)
+        assert mock_d.call_count == 2
+
+    def test_results_in_original_tool_call_order(self) -> None:
+        state = self._two_call_agent_state(parallel=True)
+
+        def fake_dispatch(st, args, *a, **kw):
+            return f"result-{args['agent']}", False
+
+        with patch("agentji.loop._dispatch_call_agent", side_effect=fake_dispatch):
+            _execute_tools(state)
+
+        tool_msgs = [m for m in state["messages"] if m["role"] == "tool"]
+        assert len(tool_msgs) == 2
+        assert tool_msgs[0]["tool_call_id"] == "t1"
+        assert tool_msgs[1]["tool_call_id"] == "t2"
+        assert "a1" in tool_msgs[0]["content"]
+        assert "a2" in tool_msgs[1]["content"]
+
+    def test_sequential_path_also_correct_order(self) -> None:
+        state = self._two_call_agent_state(parallel=False)
+
+        def fake_dispatch(st, args, *a, **kw):
+            return f"result-{args['agent']}", False
+
+        with patch("agentji.loop._dispatch_call_agent", side_effect=fake_dispatch):
+            _execute_tools(state)
+
+        tool_msgs = [m for m in state["messages"] if m["role"] == "tool"]
+        assert len(tool_msgs) == 2
+        assert tool_msgs[0]["tool_call_id"] == "t1"
+        assert tool_msgs[1]["tool_call_id"] == "t2"
+
+    def test_error_in_one_does_not_skip_the_other(self) -> None:
+        state = self._two_call_agent_state(parallel=True)
+
+        def fake_dispatch(st, args, *a, **kw):
+            if args["agent"] == "a1":
+                return "error response", True
+            return "success", False
+
+        with patch("agentji.loop._dispatch_call_agent", side_effect=fake_dispatch):
+            _execute_tools(state)
+
+        tool_msgs = [m for m in state["messages"] if m["role"] == "tool"]
+        assert len(tool_msgs) == 2  # both present
+
+    def test_single_call_agent_runs_without_threadpool(self) -> None:
+        agent_cfg = MagicMock()
+        agent_cfg.inputs = []
+        agent_cfg.outputs = []
+        cfg = MagicMock()
+        cfg.agents = {"a1": agent_cfg}
+
+        state = _base_state(
+            messages=[
+                {"role": "assistant", "content": None, "tool_calls": [
+                    {"id": "t1", "function": {"name": "call_agent",
+                     "arguments": json.dumps({"agent": "a1", "prompt": "solo"})}}
+                ]},
+            ],
+            _cfg=cfg,
+            _allowed_agents=["a1"],
+            _parallel_agents=True,
+        )
+        with patch("agentji.loop._dispatch_call_agent", return_value=("done", False)) as mock_d:
+            _execute_tools(state)
+        assert mock_d.call_count == 1
+        tool_msgs = [m for m in state["messages"] if m["role"] == "tool"]
+        assert tool_msgs[0]["content"] == "done"
+
+    def test_call_agent_and_other_tools_mixed(self) -> None:
+        """call_agent + bash in same response: bash runs sequentially, call_agent also runs."""
+        agent_cfg = MagicMock()
+        agent_cfg.inputs = []
+        agent_cfg.outputs = []
+        cfg = MagicMock()
+        cfg.agents = {"a1": agent_cfg}
+
+        tool_calls = [
+            {"id": "b1", "function": {"name": "bash", "arguments": '{"command": "echo hi"}'}},
+            {"id": "c1", "function": {"name": "call_agent",
+             "arguments": json.dumps({"agent": "a1", "prompt": "task"})}},
+        ]
+        state = _base_state(
+            messages=[{"role": "assistant", "content": None, "tool_calls": tool_calls}],
+            _cfg=cfg,
+            _allowed_agents=["a1"],
+            _parallel_agents=True,
+            builtin_set=["bash"],
+        )
+        with patch("agentji.loop._dispatch_call_agent", return_value=("agent done", False)):
+            _execute_tools(state)
+
+        tool_msgs = [m for m in state["messages"] if m["role"] == "tool"]
+        assert len(tool_msgs) == 2
+        # Results in original tool_call order (bash first, then call_agent)
+        assert tool_msgs[0]["tool_call_id"] == "b1"
+        assert tool_msgs[1]["tool_call_id"] == "c1"
+
+
+# ── _build_image_content_block ────────────────────────────────────────────────
+
+class TestBuildImageContentBlock:
+    def test_returns_image_url_type(self, tmp_path: Path) -> None:
+        from agentji.loop import _build_image_content_block
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
+        block = _build_image_content_block(str(img))
+        assert block["type"] == "image_url"
+        assert "image_url" in block
+
+    def test_url_is_data_uri(self, tmp_path: Path) -> None:
+        from agentji.loop import _build_image_content_block
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
+        block = _build_image_content_block(str(img))
+        url = block["image_url"]["url"]
+        assert url.startswith("data:")
+        assert ";base64," in url
+
+    def test_mime_type_detected_for_png(self, tmp_path: Path) -> None:
+        from agentji.loop import _build_image_content_block
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG")
+        block = _build_image_content_block(str(img))
+        assert "image/png" in block["image_url"]["url"]
+
+    def test_mime_type_detected_for_jpeg(self, tmp_path: Path) -> None:
+        from agentji.loop import _build_image_content_block
+        img = tmp_path / "photo.jpg"
+        img.write_bytes(b"\xff\xd8\xff")
+        block = _build_image_content_block(str(img))
+        assert "image/jpeg" in block["image_url"]["url"]
+
+    def test_content_is_base64_encoded(self, tmp_path: Path) -> None:
+        import base64
+        from agentji.loop import _build_image_content_block
+        raw = b"\x89PNG\r\n\x1a\nSOMEDATA"
+        img = tmp_path / "data.png"
+        img.write_bytes(raw)
+        block = _build_image_content_block(str(img))
+        url = block["image_url"]["url"]
+        b64_part = url.split(";base64,")[1]
+        assert base64.b64decode(b64_part) == raw
+
+
+# ── call_agent with attachments ────────────────────────────────────────────────
+
+class TestCallAgentAttachments:
+    def _make_state(self, cfg, run_context=None) -> AgentState:
+        return _base_state(
+            _cfg=cfg,
+            _allowed_agents=["img_agent"],
+            _run_context=run_context,
+            _parallel_agents=False,
+        )
+
+    def test_attachments_build_multimodal_content(self, tmp_path: Path) -> None:
+        """call_agent with attachments passes a list (multimodal) to run_agent."""
+        from agentji.loop import _dispatch_call_agent
+        img = tmp_path / "input.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
+
+        agent_cfg = MagicMock()
+        agent_cfg.inputs = []
+        agent_cfg.outputs = []
+        cfg = MagicMock()
+        cfg.agents = {"img_agent": agent_cfg}
+
+        state = self._make_state(cfg)
+        args = {"agent": "img_agent", "prompt": "Describe this", "attachments": [str(img)]}
+
+        with patch("agentji.loop.run_agent") as mock_run:
+            mock_run.return_value = "It's an image"
+            result, err = _dispatch_call_agent(state, args, "orchestrator", "run-1", None)
+
+        assert not err
+        prompt_passed = mock_run.call_args.args[2]
+        assert isinstance(prompt_passed, list), "Expected multimodal list when attachments present"
+        assert prompt_passed[0] == {"type": "text", "text": "Describe this"}
+        assert prompt_passed[1]["type"] == "image_url"
+        assert "data:image" in prompt_passed[1]["image_url"]["url"]
+
+    def test_no_attachments_passes_string_prompt(self, tmp_path: Path) -> None:
+        """call_agent without attachments passes plain string to run_agent."""
+        from agentji.loop import _dispatch_call_agent
+
+        agent_cfg = MagicMock()
+        agent_cfg.inputs = []
+        agent_cfg.outputs = []
+        cfg = MagicMock()
+        cfg.agents = {"img_agent": agent_cfg}
+
+        state = self._make_state(cfg)
+        args = {"agent": "img_agent", "prompt": "Just text"}
+
+        with patch("agentji.loop.run_agent") as mock_run:
+            mock_run.return_value = "done"
+            _dispatch_call_agent(state, args, "orchestrator", "run-1", None)
+
+        prompt_passed = mock_run.call_args.args[2]
+        assert isinstance(prompt_passed, str)
+        assert "Just text" in prompt_passed
+
+    def test_invalid_attachment_path_logs_warning(self, tmp_path: Path) -> None:
+        """A missing attachment path logs a warning but does not raise."""
+        from agentji.loop import _dispatch_call_agent
+        import logging
+
+        agent_cfg = MagicMock()
+        agent_cfg.inputs = []
+        agent_cfg.outputs = []
+        cfg = MagicMock()
+        cfg.agents = {"img_agent": agent_cfg}
+
+        state = self._make_state(cfg)
+        args = {
+            "agent": "img_agent",
+            "prompt": "Look",
+            "attachments": ["/nonexistent/path/image.png"],
+        }
+
+        with patch("agentji.loop.run_agent", return_value="ok"):
+            # Should not raise
+            result, err = _dispatch_call_agent(state, args, "orchestrator", "run-1", None)
+
+        assert not err  # gracefully degraded — still called run_agent
+
+
+# ── run_agent multimodal prompt ────────────────────────────────────────────────
+
+class TestRunAgentMultimodalPrompt:
+    def _write_config(self, tmp_path: Path) -> Path:
+        content = """
+            version: "1"
+            providers:
+              openai:
+                api_key: sk-test
+            agents:
+              vision:
+                model: openai/gpt-4o
+                system_prompt: You describe images.
+                max_iterations: 1
+        """
+        p = tmp_path / "agentji.yaml"
+        p.write_text(__import__("textwrap").dedent(content), encoding="utf-8")
+        return p
+
+    def test_multimodal_prompt_in_initial_message(self, tmp_path: Path) -> None:
+        """run_agent passes multimodal list directly as user message content."""
+        from agentji.config import load_config
+        cfg = load_config(self._write_config(tmp_path))
+
+        multimodal_content = [
+            {"type": "text", "text": "Describe this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]
+
+        captured_messages = []
+
+        def fake_completion(**kwargs):
+            captured_messages.extend(kwargs.get("messages", []))
+            resp = MagicMock()
+            resp.choices[0].message.model_dump.return_value = {
+                "role": "assistant", "content": "I see an image"
+            }
+            return resp
+
+        with patch("litellm.completion", side_effect=fake_completion):
+            from agentji.loop import run_agent
+            result = run_agent(cfg, "vision", multimodal_content)
+
+        # Find the user message in captured messages
+        user_msgs = [m for m in captured_messages if m.get("role") == "user"]
+        assert user_msgs, "No user message found"
+        assert isinstance(user_msgs[0]["content"], list)
+        assert user_msgs[0]["content"][0]["type"] == "text"
+        assert user_msgs[0]["content"][1]["type"] == "image_url"
