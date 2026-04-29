@@ -47,6 +47,7 @@ _cfg: AgentjiConfig | None = None
 _logger: ConversationLogger | None = None   # startup logger — provides log_path
 _default_agent: str | None = None
 _studio_enabled: bool = False               # True only when --studio flag is passed
+_root_path: str = ""                        # URL prefix for non-stripping reverse proxies
 
 # SSE event routing: pipeline_id → asyncio.Queue of log event dicts
 _event_subscribers: dict[str, asyncio.Queue] = {}
@@ -433,7 +434,11 @@ async def events_stream(run_id: str) -> StreamingResponse:
         finally:
             _event_subscribers.pop(run_id, None)
 
-    return StreamingResponse(_generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
 
 
 # ── POST /v1/cancel/{run_id} ──────────────────────────────────────────────────
@@ -450,6 +455,15 @@ async def cancel_run(run_id: str) -> dict:
 
 # ── GET / — serve studio ─────────────────────────────────────────────────
 
+def _inject_root_path_script(html_path: pathlib.Path) -> "HTMLResponse":
+    """Read HTML and inject window.__AGENTJI_ROOT_PATH__ before </head>."""
+    from fastapi.responses import HTMLResponse
+    html = html_path.read_text(encoding="utf-8")
+    script = f'<script>window.__AGENTJI_ROOT_PATH__={json.dumps(_root_path)};</script>'
+    html = html.replace("</head>", f"{script}\n</head>", 1)
+    return HTMLResponse(content=html)
+
+
 @app.get("/")
 async def serve_studio():
     if _studio_enabled:
@@ -459,9 +473,9 @@ async def serve_studio():
             if not custom_path.is_absolute():
                 custom_path = pathlib.Path.cwd() / custom_path
             if custom_path.exists():
-                return FileResponse(custom_path)
+                return _inject_root_path_script(custom_path) if _root_path else FileResponse(custom_path)
         if STUDIO_HTML.exists():
-            return FileResponse(STUDIO_HTML)
+            return _inject_root_path_script(STUDIO_HTML) if _root_path else FileResponse(STUDIO_HTML)
     return JSONResponse(
         content={
             "message": (
@@ -622,11 +636,38 @@ async def serve_media(filepath: str):
 
 # ── Server launcher (used by CLI) ─────────────────────────────────────────────
 
-def start(host: str = "0.0.0.0", port: int = 8000, reload: bool = False) -> None:
+class _RootPathStripperMiddleware:
+    """Strip root_path prefix from incoming paths for non-stripping reverse proxies.
+
+    Returns 404 for requests that don't carry the expected prefix, so the
+    server is unreachable without the correct prefix when root_path is set.
+    """
+
+    def __init__(self, app: "ASGIApp", root_path: str = "") -> None:
+        self.app = app
+        self._prefix = root_path.rstrip("/")
+
+    async def __call__(self, scope: dict, receive, send) -> None:
+        if self._prefix and scope.get("type") in ("http", "websocket"):
+            path: str = scope.get("path", "")
+            if path == self._prefix or path.startswith(self._prefix + "/"):
+                scope = dict(scope)
+                scope["path"] = path[len(self._prefix):] or "/"
+            else:
+                from starlette.responses import Response
+                await Response(status_code=404)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+def start(host: str = "0.0.0.0", port: int = 8000, reload: bool = False, root_path: str = "") -> None:
     """Start the uvicorn server. Called by the CLI after injecting module globals."""
+    if root_path:
+        app.add_middleware(_RootPathStripperMiddleware, root_path=root_path)
     uvicorn.run(
         "agentji.server:app",
         host=host,
         port=port,
         reload=reload,
+        root_path=root_path,
     )

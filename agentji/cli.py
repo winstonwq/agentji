@@ -406,6 +406,14 @@ def serve(
         "--reload",
         help="Auto-reload on code changes (development only).",
     ),
+    root_path: str = typer.Option(
+        "",
+        "--root-path",
+        help=(
+            "URL prefix when hosted behind a non-stripping reverse proxy "
+            "(e.g. /tenant/job123). Leave empty for localhost."
+        ),
+    ),
 ) -> None:
     """Start the agentji OpenAI-compatible HTTP server."""
     from agentji.config import load_config
@@ -463,6 +471,7 @@ def serve(
     server_module._logger = startup_logger
     server_module._default_agent = default_agent
     server_module._studio_enabled = studio
+    server_module._root_path = root_path
 
     # Print startup info
     default_model = cfg.agents[default_agent].model
@@ -472,9 +481,12 @@ def serve(
     console.print(f"  agent:   {default_agent} ({default_model})")
     console.print(f"  listen:  http://{host}:{port}")
     if studio:
-        console.print(f"  studio:  http://localhost:{port}")
+        studio_url = f"http://localhost:{port}{root_path}"
+        console.print(f"  studio:  {studio_url}")
     else:
         console.print(f"  studio:  disabled (use --studio to enable)")
+    if root_path:
+        console.print(f"  prefix:  {root_path}")
     console.print(f"  log:     {log_display}")
     if log_cfg.rotation == "daily":
         keep_str = f"{log_cfg.keep_days}d" if log_cfg.keep_days else "forever"
@@ -491,7 +503,7 @@ def serve(
     console.print()
 
     from agentji.server import start
-    start(host=host, port=port, reload=reload)
+    start(host=host, port=port, reload=reload, root_path=root_path)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

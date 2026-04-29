@@ -278,7 +278,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--font); font
 'use strict';
 
 // ── Server base URL ───────────────────────────────────────────────────────
-const API = location.protocol === 'file:' ? 'http://localhost:8000' : location.origin;
+const API = location.protocol === 'file:' ? 'http://localhost:8000' : location.origin + (window.__AGENTJI_ROOT_PATH__ || '');
 
 // ── State ─────────────────────────────────────────────────────────────────
 let pipeline         = null;
