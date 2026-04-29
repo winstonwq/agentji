@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentji"
-version = "0.10.2"
+version = "0.11.0"
 description = "Universal configuration and execution layer for AI agents"
 readme = "README.md"
 license = "MIT"
