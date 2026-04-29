@@ -272,6 +272,46 @@ agentji serve --config agentji.yaml --port 8000 --studio
 | `POST /v1/sessions/{id}/end` | End a session and trigger skill improvement extraction |
 | `GET /` | agentji Studio (only when `--studio` flag is set) |
 
+### Behind a reverse proxy
+
+If your infrastructure routes traffic through a non-stripping reverse proxy (e.g. RUN:AI, Kubernetes ingress, or any proxy that forwards the full path including the prefix), use `--root-path`:
+
+```bash
+agentji serve --studio --root-path /tenant/job123
+```
+
+This makes every endpoint reachable under the prefix:
+
+```
+GET  /tenant/job123/               → Studio UI
+POST /tenant/job123/v1/chat/completions
+GET  /tenant/job123/v1/events/{run_id}
+GET  /tenant/job123/v1/pipeline
+...
+```
+
+With `--root-path` set, requests without the prefix return 404 — the server is only reachable through the declared mount point. Leave `--root-path` empty (the default) for localhost and stripping-proxy deployments; behaviour is identical to today.
+
+**Example: Kubernetes ingress with path forwarding**
+
+```yaml
+# ingress.yaml — nginx does NOT strip the prefix
+annotations:
+  nginx.ingress.kubernetes.io/rewrite-target: /$1   # disabled (no rewrite)
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /myteam/jobid
+            pathType: Prefix
+            backend:
+              service: { name: agentji, port: { number: 8000 } }
+```
+
+```bash
+agentji serve --studio --root-path /myteam/jobid
+```
+
 ### Sessions
 
 Pass `X-Agentji-Session-Id` to track a conversation across turns. Control history per request:
